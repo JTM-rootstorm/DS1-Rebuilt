@@ -1,12 +1,16 @@
 # Findings
 
 ## Status (2026-10-11)
-M4 in progress. Sound and movies work: Miles (mss32, all 68 imports) on
-our own mixer over SDL3 audio, Bink (binkw32, all 10) on ffmpeg. The
-logo movie, the credits movie (main-menu attract loop) and menu music
-play; audio verified by capturing SDL's disk driver output (RMS per
-second) during automated runs. Next: menu interaction, starting a game,
-in-game audio (3D samples, streams) and the remaining HLE.
+M4 in progress; single player is playable from a new game through the
+farm. Miles audio (3D falloff and panning matched to Mssfast/Mss32) and
+Bink movies work; menus, hero creation, the intro cinematic, the farmer
+conversation, movement, saving and loading, Options and Exit all work.
+Debug and release builds hold the game's own 60 fps cap in game. HLE
+gaps seen in play: none fatal. Known: the GDI "Lucida Console" font
+texture is blank (dev console / debug text; needs a rasteriser), IME
+functions are not provided (GetProcAddress NULL), the game's resolution
+list stops at 1024x768 (its own filter). Next: wider playtesting (combat,
+inventory, spells, shops, region loads), crash/hang reports from play.
 
 M3 (main menu renders through the D3D7 HLE on dxvk-native) was reached
 before; notes below.

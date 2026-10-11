@@ -32,7 +32,9 @@ class GuestMemory {
   // like VirtualProtect. Decommitted pages read as zero when recommitted.
   bool Commit(gaddr va, uint32_t size, Prot prot);
   bool Protect(gaddr va, uint32_t size, Prot prot);
-  void Decommit(gaddr va, uint32_t size);
+  // zero=false skips clearing the pages (they are being thrown away and
+  // may not even be host-writable, e.g. an unmapped file view).
+  void Decommit(gaddr va, uint32_t size, bool zero = true);
   bool IsCommitted(gaddr va) const;
   Prot QueryProt(gaddr va) const;
 

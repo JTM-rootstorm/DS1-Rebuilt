@@ -32,8 +32,9 @@ class GuestAllocator {
   // range is not reserved.
   bool Commit(uint32_t va, uint32_t size, Prot prot);
   bool Decommit(uint32_t va, uint32_t size);
-  // Releases a whole reservation given its base.
-  bool Release(uint32_t base);
+  // Releases a whole reservation given its base. zero=false: see
+  // GuestMemory::Decommit.
+  bool Release(uint32_t base, bool zero = true);
 
   struct Region {
     uint32_t base = 0, size = 0;  // reservation containing the address

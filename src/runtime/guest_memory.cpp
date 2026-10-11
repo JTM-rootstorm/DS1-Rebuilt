@@ -90,11 +90,11 @@ bool GuestMemory::Protect(gaddr va, uint32_t size, Prot prot) {
   return true;
 }
 
-void GuestMemory::Decommit(gaddr va, uint32_t size) {
+void GuestMemory::Decommit(gaddr va, uint32_t size, bool zero) {
   if (!size) return;
   uint64_t first = va / kPageSize, last = (uint64_t(va) + size - 1) / kPageSize;
   for (uint64_t g = first; g <= last; g++) {
-    if (pages_[g] & kCommitted)
+    if (zero && (pages_[g] & kCommitted))
       std::memset(base_ + g * kPageSize, 0, kPageSize);  // reads back as zero
     pages_[g] = 0;
   }

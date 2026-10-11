@@ -18,6 +18,10 @@ namespace ds1::hle {
 
 inline constexpr int kCdecl = -1;
 
+// >0 while an HLE handler runs on this thread (0 again inside CallGuest).
+// A host fault then is a runtime bug, not a guest access violation.
+extern thread_local int t_hle_depth;
+
 // Guest range used for pseudo HMODULE values of the DLLs we provide.
 inline constexpr uint32_t kModuleRegion = 0x70000000;
 inline constexpr uint32_t kModuleRegionSize = 0x00200000;

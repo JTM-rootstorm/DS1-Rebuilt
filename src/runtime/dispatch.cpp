@@ -99,6 +99,7 @@ void TraceF(const char* fmt, ...) {
 // functions are named f_<guest va>) and exits.
 namespace hle {
 bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr);
+extern thread_local int t_hle_depth;
 }
 
 namespace {
@@ -110,7 +111,8 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
   uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
   // Guest access violations go to the guest's SEH chain first: the game
   // commits demand-paged resource memory from an exception filter.
-  if (a - base < (1ull << 32) && CurrentThread() && !t_in_fault) {
+  if (a - base < (1ull << 32) && CurrentThread() && !t_in_fault &&
+      hle::t_hle_depth == 0) {
     bool write = false;
 #if defined(__linux__) && defined(__x86_64__)
     write = (static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_ERR] & 2) != 0;

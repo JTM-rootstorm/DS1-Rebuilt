@@ -4,11 +4,14 @@
 M0-M2 done; M3 (DirectDraw/D3D7) in progress. The game now: creates a
 dxvk-native d3d9 device on the SDL window (800x600, T&L HAL), creates
 its surfaces/textures, demand-pages Tank data through SEH, presents
-frames (Flip), runs a second thread, and FuBi parses all 3234 exports
-via dbghelp!UnDecorateSymbolName. It then shuts down cleanly with
-ExitProcess(0x4641494C = "FAIL") after writing a small file (CreateFileA
-C0000000 CREATE_ALWAYS from 00433F25, ~0x3A bytes). NEXT: find that file
-(per-user tree or game dir) and read why it failed.
+frames (Flip), runs a second thread, FuBi parses all 3234 exports via
+dbghelp!UnDecorateSymbolName, and init continues to sound setup: next
+stop mss32!_AIL_set_file_callbacks@16 (Miles; 68 imports, M4 surface but
+needed for the menu). NEXT: Miles HLE (at least a working silent driver).
+- Fixed: UnmapViewOfFile zero-filled pages after remapping them
+  PROT_NONE; the host fault was forwarded to the guest as an AV and the
+  game's top-level __except (00417C66) shut it down with "FAIL". Faults
+  inside HLE handlers are now runtime-bug fatals (hle::t_hle_depth).
 
 M3 work so far (see src/runtime/hle/{com,ddraw,d3d7,dbghelp}.cpp,
 src/runtime/gfx/):

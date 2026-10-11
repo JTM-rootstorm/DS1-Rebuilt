@@ -63,6 +63,12 @@ void PutStr(uint32_t va, const std::string& s) {
 
 uint32_t CallGuest(Ctx& c, uint32_t va, std::initializer_list<uint32_t> args) {
   uint32_t saved = c.esp;
+  // Guest code runs here: faults are guest access violations again.
+  struct DepthGuard {
+    int saved = hle::t_hle_depth;
+    DepthGuard() { hle::t_hle_depth = 0; }
+    ~DepthGuard() { hle::t_hle_depth = saved; }
+  } guard;
   for (auto it = std::rbegin(args); it != std::rend(args); ++it) {
     c.esp -= 4;
     Wr32(c.esp, *it);

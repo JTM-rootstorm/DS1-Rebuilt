@@ -120,11 +120,11 @@ bool GuestAllocator::Decommit(uint32_t va, uint32_t size) {
   return true;
 }
 
-bool GuestAllocator::Release(uint32_t base) {
+bool GuestAllocator::Release(uint32_t base, bool zero) {
   std::lock_guard<std::recursive_mutex> l(mu_);
   auto it = regions_.find(base);
   if (it == regions_.end()) return false;
-  mem_->Decommit(base, it->second);
+  mem_->Decommit(base, it->second, zero);
   regions_.erase(it);
   return true;
 }

@@ -10,6 +10,8 @@
 
 namespace ds1::hle {
 
+thread_local int t_hle_depth = 0;
+
 namespace {
 
 std::string Lower(std::string s) {
@@ -110,7 +112,9 @@ void CallThunk(Ctx& c, uint32_t thunk) {
     TraceF("[%04X] %s!%s(%s) from %08X\n", CurrentThread()->tid,
            s->dll.c_str(), s->name.c_str(), args.c_str(), Rd32(c.esp));
   }
+  ++t_hle_depth;
   uint32_t r = d.fn(c);
+  --t_hle_depth;
   if (g_trace) TraceF("[%04X]   -> %X\n", CurrentThread()->tid, r);
   c.eax = r;
   c.esp += 4 + (d.nargs > 0 ? 4 * uint32_t(d.nargs) : 0);

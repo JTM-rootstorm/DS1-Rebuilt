@@ -442,10 +442,10 @@ HLE("kernel32.dll", UnmapViewOfFile, 1) {
     size = it->second;
     g_views.erase(it);
   }
-  // Back to an anonymous inaccessible reservation, then release it.
-  mmap(GPtr(base), size, PROT_NONE,
-       MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-  g_proc->vm.Release(base);
+  // Release replaces the file mapping with an inaccessible anonymous one.
+  // Don't zero first: the pages are discarded and may be read-only.
+  (void)size;
+  g_proc->vm.Release(base, false);
   return 1;
 }
 

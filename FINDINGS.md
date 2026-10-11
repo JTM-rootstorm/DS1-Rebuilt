@@ -1,17 +1,33 @@
 # Findings
 
 ## Status (2026-10-11)
-M0-M2 done; M3 (DirectDraw/D3D7) in progress. The game now: creates a
-dxvk-native d3d9 device on the SDL window (800x600, T&L HAL), creates
-its surfaces/textures, demand-pages Tank data through SEH, presents
-frames (Flip), runs a second thread, FuBi parses all 3234 exports via
-dbghelp!UnDecorateSymbolName, and init continues to sound setup: next
-stop mss32!_AIL_set_file_callbacks@16 (Miles; 68 imports, M4 surface but
-needed for the menu). NEXT: Miles HLE (at least a working silent driver).
-- Fixed: UnmapViewOfFile zero-filled pages after remapping them
-  PROT_NONE; the host fault was forwarded to the guest as an AV and the
-  game's top-level __except (00417C66) shut it down with "FAIL". Faults
-  inside HLE handlers are now runtime-bug fatals (hle::t_hle_depth).
+M3 milestone reached: the splash logo and the MAIN MENU render through
+the D3D7 HLE on dxvk-native (800x600), stable for 60 s / 2500+ frames.
+Sound is reported absent (Miles HLE stub: no digital device) and Bink
+movies are skipped (BinkOpen fails); both are M4. Input/menu interaction
+not tested yet.
+
+Fixed on the way to the menu:
+- UnmapViewOfFile zero-filled pages after remapping them PROT_NONE ->
+  forwarded as a guest AV -> game's top-level __except shut it down.
+  Faults inside HLE handlers are now runtime-bug fatals (t_hle_depth).
+- Nested guest faults (the Tank decompressor faults inside its own SEH
+  filter): SA_NODEFER + depth limit; handler guest stack gap 32 KiB.
+- MoveWindow sent WM_SIZE/WM_MOVE unconditionally; the game's WM_SIZE
+  handler calls MoveWindow -> infinite recursion. Now only on change.
+- ShowWindow/activation recorded the active window after sending
+  WM_ACTIVATEAPP -> re-entrant loop. Now recorded first.
+- The game presents with Blt(primary <- backbuffer), not Flip: treated
+  as a swap-chain Present.
+- FIFO present to an occluded Wayland window blocks forever (froze the
+  frame loop and the loading thread). DS1_VSYNC=0/1; DS1_BACKGROUND=1
+  (automated runs) implies no vsync, no pointer warps, no focus steal.
+- SetCursorPos only warps while the game window has keyboard focus (it
+  recentres the pointer every frame and stole the user's mouse).
+- SDL_HINT_NO_SIGNAL_HANDLERS: SIGTERM must actually stop the process.
+
+Dev aids: DS1_SHOT_EVERY=N + DS1_SHOT_DIR=dir saves every Nth presented
+frame as BMP.
 
 M3 work so far (see src/runtime/hle/{com,ddraw,d3d7,dbghelp}.cpp,
 src/runtime/gfx/):

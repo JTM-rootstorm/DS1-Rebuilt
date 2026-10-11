@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -278,15 +279,19 @@ void WindowOrigin(uint32_t hwnd, int* x, int* y) {
 }
 
 void ActivateApp(uint32_t hwnd, bool active) {
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    if (active) {
+      if (g_active == hwnd) return;  // already active: nothing to report
+      g_active = g_focus = hwnd;
+    } else {
+      if (g_active != hwnd) return;
+      g_active = g_focus = 0;
+    }
+  }
   Post(hwnd, WM_ACTIVATEAPP, active ? 1 : 0, 0);
   Post(hwnd, WM_ACTIVATE, active ? 1 : 0, 0);
   Post(hwnd, active ? WM_SETFOCUS : WM_KILLFOCUS, 0, 0);
-  std::lock_guard<std::recursive_mutex> l(g_mu);
-  if (active) {
-    g_active = g_focus = hwnd;
-  } else if (g_active == hwnd) {
-    g_active = g_focus = 0;
-  }
 }
 
 void HandleSdlEvent(const SDL_Event& e) {
@@ -424,9 +429,23 @@ bool OnMainThread() { return std::this_thread::get_id() == g_main_thread_id; }
 
 }  // namespace
 
+// DS1_BACKGROUND=1 (used for automated test runs): never move or hide the
+// host pointer and don't take focus when the window appears.
+bool Background() {
+  static const bool bg = [] {
+    const char* e = std::getenv("DS1_BACKGROUND");
+    return e && *e && *e != '0';
+  }();
+  return bg;
+}
+
 void EnsureSdlVideo() {
   if (g_sdl_up) return;
   if (!OnMainThread()) FatalF("SDL video requested off the main thread");
+  if (Background()) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+  // Leave SIGINT/SIGTERM alone: SDL would turn them into quit events the
+  // game may ignore, making the process hard to stop.
+  SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
   if (!SDL_Init(SDL_INIT_VIDEO)) FatalF("SDL_Init: %s", SDL_GetError());
   g_sdl_up = true;
   if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {
@@ -627,13 +646,21 @@ HLE("user32.dll", ShowWindow, 2) {
     }
   }
   if (show != was) Send(hwnd, WM_SHOWWINDOW, show ? 1 : 0, 0);
-  if (show && sdl && g_active != hwnd) {
+  bool activate = false;
+  {
     // A freshly shown top-level window becomes the active app window.
+    // Record that before sending: the game's activation handler calls
+    // ShowWindow again, which must then see it as already active.
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    if (show && sdl && g_active != hwnd) {
+      g_active = g_focus = hwnd;
+      activate = true;
+    }
+  }
+  if (activate) {
     Send(hwnd, WM_ACTIVATEAPP, 1, 0);
     Send(hwnd, WM_ACTIVATE, 1, 0);
     Send(hwnd, WM_SETFOCUS, 0, 0);
-    std::lock_guard<std::recursive_mutex> l(g_mu);
-    g_active = g_focus = hwnd;
   }
   return was ? 1 : 0;
 }
@@ -667,27 +694,33 @@ HLE("user32.dll", IsIconic, 1) {
   return s && (SDL_GetWindowFlags(s) & SDL_WINDOW_MINIMIZED) ? 1 : 0;
 }
 
+// Like Windows, WM_SIZE/WM_MOVE are only sent when the size/position
+// actually changes (the game re-applies its rect from its WM_SIZE handler;
+// sending unconditionally recurses forever).
 void ApplyRect(uint32_t hwnd, int x, int y, int w, int h, bool move, bool size) {
   SDL_Window* sdl = nullptr;
   int cw = 0, ch = 0;
+  bool moved = false, sized = false;
   {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     Window* win = Win(hwnd);
     if (!win) return;
-    if (move) {
+    if (move && (win->x != x || win->y != y)) {
       win->x = x;
       win->y = y;
+      moved = true;
     }
-    if (size) {
+    if (size && (win->w != w || win->h != h)) {
       win->w = w;
       win->h = h;
+      sized = true;
     }
     ClientSize(*win, &cw, &ch);
     sdl = win->sdl;
   }
-  if (sdl && size) SDL_SetWindowSize(sdl, std::max(cw, 1), std::max(ch, 1));
-  if (size) Send(hwnd, WM_SIZE, 0, MkLparam(cw, ch));
-  if (move) Send(hwnd, WM_MOVE, 0, MkLparam(x, y));
+  if (sdl && sized) SDL_SetWindowSize(sdl, std::max(cw, 1), std::max(ch, 1));
+  if (sized) Send(hwnd, WM_SIZE, 0, MkLparam(cw, ch));
+  if (moved) Send(hwnd, WM_MOVE, 0, MkLparam(x, y));
 }
 
 HLE("user32.dll", SetWindowPos, 7) {
@@ -1105,7 +1138,7 @@ HLE("user32.dll", CallNextHookEx, 4) { return 0; }
 
 HLE("user32.dll", ShowCursor, 1) {
   g_cursor_count += Arg(c, 0) ? 1 : -1;
-  if (g_sdl_up) {
+  if (g_sdl_up && !Background()) {
     if (g_cursor_count >= 0)
       SDL_ShowCursor();
     else
@@ -1129,7 +1162,11 @@ HLE("user32.dll", SetCursorPos, 2) {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     hwnd = g_active;
   }
-  if (SDL_Window* s = SdlWindowFor(hwnd)) {
+  // Only move the real pointer while our window has focus: the game
+  // recentres the cursor every frame and must never grab it from other
+  // applications.
+  SDL_Window* s = SdlWindowFor(hwnd);
+  if (s && !Background() && SDL_GetKeyboardFocus() == s) {
     int ox, oy;
     WindowOrigin(hwnd, &ox, &oy);
     SDL_WarpMouseInWindow(s, float(x - ox), float(y - oy));

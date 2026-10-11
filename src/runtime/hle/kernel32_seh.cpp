@@ -166,7 +166,15 @@ HLE("kernel32.dll", UnhandledExceptionFilter, 1) {
 // calls starts well below the stale ESP so live frames are not clobbered.
 bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr) {
   uint32_t saved_esp = c.esp;
-  c.esp -= 0x40000;
+  // The live area below the last spilled ESP is small: stack allocations
+  // over 4 KiB go through _chkstk, which is a call (and spills). Nested
+  // faults (a filter faulting) each step down by this gap again.
+  constexpr uint32_t kGap = 0x8000;
+  Thread* t = CurrentThread();
+  if (c.esp < t->stack_lo + kGap + 0x4000)
+    FatalF("guest stack exhausted delivering an access violation at %08X "
+           "(esp %08X, stack %08X-%08X)", addr, c.esp, t->stack_lo, t->stack_hi);
+  c.esp -= kGap;
   uint32_t params[2] = {write ? 1u : 0u, addr};
   bool cont = Dispatch_(c, 0xC0000005, 0, 2, params, 0);
   c.esp = saved_esp;

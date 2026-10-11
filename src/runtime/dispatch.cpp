@@ -73,7 +73,11 @@ void FatalF(const char* fmt, ...) {
     std::fprintf(stderr, "  guest thread %04X\n", t->tid);
     DumpGuestState(t->ctx);
   }
+  std::fprintf(stderr, "  host backtrace:\n");
   std::fflush(stderr);
+  void* frames[64];
+  int nf = backtrace(frames, 64);
+  backtrace_symbols_fd(frames, nf, 2);
   std::_Exit(3);
 }
 
@@ -103,7 +107,11 @@ extern thread_local int t_hle_depth;
 }
 
 namespace {
-thread_local bool t_in_fault = false;
+// Faults can nest: an exception filter may itself touch a not-yet-paged
+// page (the Tank decompressor does). Windows dispatches a nested
+// exception; so do we, up to a sanity limit.
+thread_local int t_fault_depth = 0;
+constexpr int kMaxFaultDepth = 8;
 
 void FaultHandler(int sig, siginfo_t* si, void* uc) {
   char buf[256];
@@ -111,16 +119,16 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
   uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
   // Guest access violations go to the guest's SEH chain first: the game
   // commits demand-paged resource memory from an exception filter.
-  if (a - base < (1ull << 32) && CurrentThread() && !t_in_fault &&
-      hle::t_hle_depth == 0) {
+  if (a - base < (1ull << 32) && CurrentThread() &&
+      t_fault_depth < kMaxFaultDepth && hle::t_hle_depth == 0) {
     bool write = false;
 #if defined(__linux__) && defined(__x86_64__)
     write = (static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
 #endif
-    t_in_fault = true;
+    ++t_fault_depth;
     bool cont = hle::RaiseAccessViolation(CurrentThread()->ctx, write,
                                           uint32_t(a - base));
-    t_in_fault = false;
+    --t_fault_depth;
     if (cont) return;  // retry the faulting instruction
   }
   (void)uc;
@@ -159,7 +167,9 @@ void InstallFaultHandler() {
   InstallSignalStack();
   struct sigaction sa{};
   sa.sa_sigaction = FaultHandler;
-  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  // SA_NODEFER: a fault inside a guest exception filter must be
+  // deliverable while we are still in the handler for the first one.
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
   sigaction(SIGSEGV, &sa, nullptr);
   sigaction(SIGBUS, &sa, nullptr);
 }

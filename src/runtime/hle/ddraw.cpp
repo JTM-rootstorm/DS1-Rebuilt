@@ -16,7 +16,9 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "runtime/hle/ddraw_impl.h"
 #include "runtime/hle/hle.h"
@@ -41,6 +43,33 @@ constexpr uint32_t kVidMemTotal = 64u << 20;
 
 State g_state;
 
+// Dev aid: DS1_SHOT_EVERY=N saves every Nth presented frame as
+// $DS1_SHOT_DIR/frame_NNNNN.bmp (default dir: current directory).
+void PresentFrame() {
+  static const int every = [] {
+    const char* e = std::getenv("DS1_SHOT_EVERY");
+    return e ? std::atoi(e) : 0;
+  }();
+  static int frame = 0;
+  frame++;
+  gfx::Device* g = Gfx();
+  if (every > 0 && frame % every == 0) {
+    int w = g_state.mode_w ? g_state.mode_w : 1024, h = g_state.mode_h ? g_state.mode_h : 768;
+    std::vector<uint8_t> px(size_t(w) * h * 4);
+    g->ReadBack({0, 0, w, h}, px.data(), uint32_t(w * 4), gfx::Format::X8R8G8B8);
+    SDL_Surface* surf = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_XRGB8888,
+                                              px.data(), w * 4);
+    const char* dir = std::getenv("DS1_SHOT_DIR");
+    char path[512];
+    std::snprintf(path, sizeof path, "%s/frame_%05d.bmp", dir ? dir : ".", frame);
+    if (surf) {
+      SDL_SaveBMP(surf, path);
+      SDL_DestroySurface(surf);
+    }
+  }
+  g->Present();
+}
+
 template <typename T>
 T* G(uint32_t va) {
   return reinterpret_cast<T*>(GPtr(va));
@@ -53,6 +82,13 @@ State& St() { return g_state; }
 gfx::Device* Gfx() {
   State& s = g_state;
   if (!s.gfx) {
+    // DS1_VSYNC=0 presents immediately. Background (automated) runs never
+    // wait for vblank: a FIFO present to an occluded Wayland window can
+    // block indefinitely.
+    const char* vs = std::getenv("DS1_VSYNC");
+    const char* bg = std::getenv("DS1_BACKGROUND");
+    if (vs) s.vsync = *vs && *vs != '0';
+    else if (bg && *bg && *bg != '0') s.vsync = false;
     SDL_Window* w = SdlWindowFor(s.hwnd);
     if (!w) FatalF("ddraw: no SDL window for hwnd %08X", s.hwnd);
     s.gfx = gfx::CreateD3D9Device(w);
@@ -441,6 +477,12 @@ uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
     return DD_OK;
   }
   if (!src) return DDERR_INVALIDPARAMS;
+  // Back buffer -> primary is how the game presents (instead of Flip):
+  // that is a swap-chain present, not a pixel copy.
+  if (dst.kind == Surface::Kind::Primary && src->kind == Surface::Kind::BackBuffer) {
+    PresentFrame();
+    return DD_OK;
+  }
   guest::RECT sr = ReadRect(src_rect_va, *src);
   if (IsRenderTarget(*src)) PullRenderTarget(*src);
   if (!src->mem) return DDERR_UNSUPPORTED;
@@ -865,7 +907,7 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::BltFast", DDS7_BltFast, 6) {
 }
 
 HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Flip", DDS7_Flip, 3) {
-  Gfx()->Present();
+  PresentFrame();
   return DD_OK;
 }
 

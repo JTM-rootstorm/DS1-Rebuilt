@@ -78,6 +78,8 @@ if(DS1_GENERATED AND TARGET ds1_x87)
     src/runtime/hle/kernel32_misc.cpp
     src/runtime/hle/shell_net.cpp
     src/runtime/hle/dbghelp.cpp
+    src/runtime/hle/mss32.cpp
+    src/runtime/hle/binkw32.cpp
     src/runtime/hle/com.cpp
     src/runtime/hle/ddraw.cpp
     src/runtime/hle/d3d7.cpp

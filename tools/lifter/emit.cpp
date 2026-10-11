@@ -1040,6 +1040,11 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
       seh = true;
   }
   if (seh) o += "  try {\n";
+  // Instructions are emitted in address order, so if the function also
+  // reaches code below its entry (shared tails, e.g. strstr jumping into
+  // strchr), execution must start with a jump to the entry.
+  if (!f.insns.empty() && f.insns.begin()->first != f.entry)
+    o += Fmt("  goto L_%08X;\n", f.entry);
   auto pr = p_.probes.find(f.entry);
   if (pr != p_.probes.end())
     o += Fmt("  LIFT_SPILL; ::ds1::Probe(c, 0x%Xu, \"%s\"); LIFT_RELOAD;\n",

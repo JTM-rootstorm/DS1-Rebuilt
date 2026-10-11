@@ -1,28 +1,49 @@
 # Findings
 
-## Status (2026-10-10)
-M0, M1 and M2 done. The recompiled binary runs the CRT, all static
-constructors and WinMain's app setup natively: keyboard LL hook, main
-window (SDL3, class gpgwndclass_dungeonsiege_exe, 1024x768 WS_POPUP),
-registry and INI lookup, its 200 MB commit probe, temp-file checks, and
-stops at the first DirectDraw call: ddraw!DirectDrawEnumerateExA from
-0065C6FD (renderer device enumeration). Next: M3, DirectDraw/D3D7 on the
-d3d9 backend.
-- Game-visible facts learned in M2:
-  - It reads DungeonSiege.ini from My Documents\Dungeon Siege (absent on
-    first run -> defaults), maps under the per-user tree.
-  - GlobalMemoryStatus values are compared as signed ints; anything
-    >= 2 GiB reads as negative and triggers the "swap file" error.
-  - It probes VirtualAlloc(NULL, 200 MB, MEM_COMMIT) (commit without
-    reserve) and expects success.
-  - LANGUAGE.DLL (localisation) is tried and absent in the GOG install;
-    the game continues without it.
-  - It resolves dbghelp (FuBi), OpenThread, SHGetFolderPathA/W and
-    IsProcessorFeaturePresent dynamically.
-- SEH is wired (RaiseException/RtlUnwind walk the guest fs:[0] chain; the
-  __except block call in __except_handler3 at 0040A0A3 is a manifest
-  `resume` site; 93 functions that write fs:[0] catch GuestResume) but has
-  not been exercised by the game yet.
+## Status (2026-10-11)
+M0-M2 done; M3 (DirectDraw/D3D7) in progress. The game now: creates a
+dxvk-native d3d9 device on the SDL window (800x600, T&L HAL), creates
+its surfaces/textures, demand-pages Tank data through SEH, presents
+frames (Flip), runs a second thread, and FuBi parses all 3234 exports
+via dbghelp!UnDecorateSymbolName. It then shuts down cleanly with
+ExitProcess(0x4641494C = "FAIL") after writing a small file (CreateFileA
+C0000000 CREATE_ALWAYS from 00433F25, ~0x3A bytes). NEXT: find that file
+(per-user tree or game dir) and read why it failed.
+
+M3 work so far (see src/runtime/hle/{com,ddraw,d3d7,dbghelp}.cpp,
+src/runtime/gfx/):
+- Guest COM: objects [vtable][magic][id] in guest memory, vtables of named
+  HLE thunks ("IDirectDrawSurface7::Blt"), unimplemented methods fatal.
+- ddraw_types.h guest structs verified against the mingw SDK headers by
+  generated static_asserts (tools/layout, run once under wine).
+- gfx::Device interface (D3D7 semantics) + d3d9 backend via dxvk-native.
+- Adapter reported as GeForce3 (10DE/0200, 64 MB): best profile in
+  system_detail.gas (trilinear, render-target shadows).
+- Game passes coop flags 0xC13 incl. DDSCL_FPUSETUP (0x800), so D3D7 must
+  NOT touch the FPU (answers the old open question; the game sets
+  PC=24/RC=chop itself).
+- Tank demand paging: the game reserves NOACCESS memory and an SEH filter
+  (0064AB4C under __except_handler3) commits + reads on access violation.
+  Host SIGSEGV in guest memory -> RaiseAccessViolation -> guest SEH;
+  "continue execution" retries the faulting instruction. Lifted code is
+  built with -fnon-call-exceptions; each guest thread has a 16 MB
+  sigaltstack.
+- Heap is MicroQuill SmartHeap (static, on VirtualAlloc/VirtualQuery);
+  game never calls HeapAlloc.
+- dbghelp: FuBi undecorates with flags 0x800 and parses the text;
+  UndnameMsvc() normalises LLVM output to MSVC undname style (",", "> >",
+  "X *", "(__cdecl*)"). Uses system libLLVMDemangle.a (vendor for macOS).
+
+Bugs found and fixed in M3:
+- Lifter: functions whose code extends below the entry (shared tails,
+  e.g. strstr -> strchr body) started executing at the lowest address.
+  Fix: emit `goto L_<entry>` first (372 functions affected).
+- GlobalMemoryStatus / VirtualAlloc semantics (see M2 notes).
+
+Debug tooling: DS1_TRACE=1 logs HLE calls with return values;
+tools/ghidra/Decompile.java for headless decompiles; the fault handler
+prints the guest address and lifted host backtrace.
+
 - ds1_lift: 31292 functions (27660 Ghidra/exports + 3632 from code
   immediates and .rdata/.data pointer scans), 1.17M instructions, 98 C++
   files (~125 MB), -O2 build in ~30-40 s on 16 cores. 151 "unimplemented"
@@ -144,7 +165,9 @@ updateclient(dll).dll. *.dsdll plugin search via %dsdll_path%.
 
 COM GUIDs present: CLSID_DirectPlay8Client/Server/Address (multiplayer
 only; Zone.com is dead, so fail CoCreateInstance), IID_IDirectDraw7,
-IID_IDirect3D7, IID_IDirect3DHALDevice. No DirectInput (input is Win32
+IID_IDirect3D7 (F5049E77), IID_IDirect3DTnLHalDevice (F5049E78, earlier
+mislabelled as IID_IDirect3D7), IID_IDirect3DHALDevice,
+IID_IDirectDrawGammaControl. No DirectInput (input is Win32
 messages / GetAsyncKeyState), no DirectSound (Miles owns audio).
 
 ## Graphics

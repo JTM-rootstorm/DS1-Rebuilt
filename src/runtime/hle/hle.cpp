@@ -111,6 +111,7 @@ void CallThunk(Ctx& c, uint32_t thunk) {
            s->dll.c_str(), s->name.c_str(), args.c_str(), Rd32(c.esp));
   }
   uint32_t r = d.fn(c);
+  if (g_trace) TraceF("[%04X]   -> %X\n", CurrentThread()->tid, r);
   c.eax = r;
   c.esp += 4 + (d.nargs > 0 ? 4 * uint32_t(d.nargs) : 0);
 }
@@ -133,6 +134,10 @@ uint32_t ProcAddress(uint32_t hmodule, const std::string& name) {
           dll.c_str(), name.c_str());
     return 0;
   }
+  return AddSlot(dll, name);
+}
+
+uint32_t ThunkFor(const std::string& dll, const std::string& name) {
   return AddSlot(dll, name);
 }
 

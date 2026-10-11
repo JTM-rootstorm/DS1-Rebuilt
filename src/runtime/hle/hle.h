@@ -50,6 +50,10 @@ uint32_t ModuleHandle(const std::string& dll);
 // Thunk address for dll!name (GetProcAddress); 0 if not implemented.
 uint32_t ProcAddress(uint32_t hmodule, const std::string& name);
 
+// Thunk address for dll!name whether or not a handler exists (calling an
+// unimplemented one is fatal and names it). Used for COM vtables.
+uint32_t ThunkFor(const std::string& dll, const std::string& name);
+
 void SetLastError(uint32_t e);
 
 }  // namespace ds1::hle

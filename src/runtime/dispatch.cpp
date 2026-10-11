@@ -4,6 +4,12 @@
 // table over .text, or to an HLE handler for thunk addresses. Anything
 // else is fatal: there is no interpreter fallback (CLAUDE.md).
 
+#include <execinfo.h>
+#include <sys/mman.h>
+#include <ucontext.h>
+#include <signal.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -86,7 +92,79 @@ void TraceF(const char* fmt, ...) {
   va_end(ap);
 }
 
+// Host faults (SIGSEGV/SIGBUS) in guest memory are guest access
+// violations: they go to the guest SEH chain (the game demand-pages Tank
+// data from an exception filter). Anything unhandled, or a fault outside
+// the arena (a runtime bug), is reported with the host call chain (lifted
+// functions are named f_<guest va>) and exits.
+namespace hle {
+bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr);
+}
+
+namespace {
+thread_local bool t_in_fault = false;
+
+void FaultHandler(int sig, siginfo_t* si, void* uc) {
+  char buf[256];
+  uintptr_t a = reinterpret_cast<uintptr_t>(si->si_addr);
+  uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
+  // Guest access violations go to the guest's SEH chain first: the game
+  // commits demand-paged resource memory from an exception filter.
+  if (a - base < (1ull << 32) && CurrentThread() && !t_in_fault) {
+    bool write = false;
+#if defined(__linux__) && defined(__x86_64__)
+    write = (static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+#endif
+    t_in_fault = true;
+    bool cont = hle::RaiseAccessViolation(CurrentThread()->ctx, write,
+                                          uint32_t(a - base));
+    t_in_fault = false;
+    if (cont) return;  // retry the faulting instruction
+  }
+  (void)uc;
+  int n;
+  if (a - base < (1ull << 32))
+    n = std::snprintf(buf, sizeof buf,
+                      "FATAL: %s: guest memory fault at guest %08lX\n",
+                      sig == SIGSEGV ? "SIGSEGV" : "SIGBUS",
+                      static_cast<unsigned long>(a - base));
+  else
+    n = std::snprintf(buf, sizeof buf,
+                      "FATAL: %s: host fault at %p (runtime bug)\n",
+                      sig == SIGSEGV ? "SIGSEGV" : "SIGBUS", si->si_addr);
+  (void)!write(2, buf, size_t(n));
+  void* frames[48];
+  int nf = backtrace(frames, 48);
+  backtrace_symbols_fd(frames, nf, 2);
+  _exit(4);
+}
+}  // namespace
+
+// Each host thread running guest code needs its own signal stack: SEH
+// handlers for guest faults run lifted code on it, so it is large.
+void InstallSignalStack() {
+  constexpr size_t kSize = 16u << 20;
+  void* p = mmap(nullptr, kSize, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  stack_t ss{};
+  ss.ss_sp = p;
+  ss.ss_size = kSize;
+  sigaltstack(&ss, nullptr);
+}
+
+namespace {
+void InstallFaultHandler() {
+  InstallSignalStack();
+  struct sigaction sa{};
+  sa.sa_sigaction = FaultHandler;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigaction(SIGSEGV, &sa, nullptr);
+  sigaction(SIGBUS, &sa, nullptr);
+}
+}  // namespace
+
 void InitDispatch() {
+  InstallFaultHandler();
   for (const auto& s : g_proc->img.sections)
     if (s.name == ".text") {
       g_text_lo = s.va;
@@ -100,6 +178,8 @@ void InitDispatch() {
 }
 
 void Dispatch(Ctx& c, uint32_t target, uint32_t va) {
+  if (va == 0x40A0A3u || va == 0x0u)
+    DS1_TRACE("  dispatch %08X from %08X\n", target, va);
   if (target - g_text_lo < g_text_size) {
     if (GuestFn fn = g_table[target - g_text_lo]) {
       fn(c);

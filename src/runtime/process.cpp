@@ -19,6 +19,7 @@
 namespace ds1 {
 
 void InitDispatch();
+void InstallSignalStack();
 
 Process* g_proc = nullptr;
 
@@ -142,6 +143,7 @@ struct HostThreadStart {
 static void* HostThreadMain(void* arg) {
   auto* s = static_cast<HostThreadStart*>(arg);
   t_current = s->t;
+  InstallSignalStack();
   Ctx& c = s->t->ctx;
   uint32_t r = 0;
   try {

@@ -471,7 +471,12 @@ uint32_t QueryMemory(uint32_t addr, uint32_t mbi) {
 }
 
 HLE("kernel32.dll", VirtualQuery, 3) {
-  return QueryMemory(Arg(c, 0), Arg(c, 1));
+  uint32_t r = QueryMemory(Arg(c, 0), Arg(c, 1));
+  uint32_t m = Arg(c, 1);
+  DS1_TRACE("  VirtualQuery(%X): base %X alloc %X size %X state %X prot %X\n",
+            Arg(c, 0), Rd32(m), Rd32(m + 4), Rd32(m + 12), Rd32(m + 16),
+            Rd32(m + 20));
+  return r;
 }
 
 HLE("kernel32.dll", VirtualQueryEx, 4) {

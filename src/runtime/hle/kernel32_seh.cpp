@@ -52,10 +52,11 @@ void FillContext(uint32_t ctx, const Ctx& c, uint32_t eip, uint32_t esp) {
   x87::Save(copy, GPtr(ctx + 0x1C));
 }
 
-// Walks the SEH chain for an exception. Returns only if a handler asked to
-// continue execution.
-void Dispatch_(Ctx& c, uint32_t code, uint32_t flags, uint32_t nparams,
-               uint32_t params, uint32_t eip) {
+// Walks the SEH chain for an exception. Returns true if a handler asked to
+// continue execution, false if no handler took it. A handler that runs an
+// __except block never returns here (GuestResume unwinds past us).
+bool Dispatch_(Ctx& c, uint32_t code, uint32_t flags, uint32_t nparams,
+               const uint32_t* params, uint32_t eip) {
   uint32_t teb = c.fs_base;
   uint32_t saved_esp = c.esp;
   // Scratch space for the records below the current stack.
@@ -68,10 +69,12 @@ void Dispatch_(Ctx& c, uint32_t code, uint32_t flags, uint32_t nparams,
   Wr32(rec + 0x0C, eip);
   nparams = std::min<uint32_t>(nparams, 15);
   Wr32(rec + 0x10, nparams);
-  for (uint32_t i = 0; i < nparams; i++) Wr32(rec + 0x14 + 4 * i, Rd32(params + 4 * i));
+  for (uint32_t i = 0; i < nparams; i++) Wr32(rec + 0x14 + 4 * i, params[i]);
   FillContext(ctx, c, eip, saved_esp + 4 + 16);
 
-  DS1_TRACE("  exception %08X at %08X, walking SEH chain\n", code, eip);
+  DS1_TRACE("  exception %08X at %08X (params %u: %08X %08X), walking SEH chain\n",
+            code, eip, nparams, nparams > 0 ? params[0] : 0,
+            nparams > 1 ? params[1] : 0);
   for (uint32_t reg = Rd32(teb); reg != kEnd && reg; reg = Rd32(reg)) {
     if (reg < CurrentThread()->stack_lo || reg >= CurrentThread()->stack_hi)
       FatalF("corrupt SEH chain: record %08X outside the stack", reg);
@@ -92,22 +95,24 @@ void Dispatch_(Ctx& c, uint32_t code, uint32_t flags, uint32_t nparams,
       c.ecx = Rd32(ctx + 0xAC);
       c.ebp = Rd32(ctx + 0xB4);
       c.esp = saved_esp;
-      return;
+      return true;
     }
     if (disp != kContinueSearch)
       WarnF("SEH handler %08X returned disposition %u; continuing search\n",
             handler, disp);
   }
   c.esp = saved_esp;
-  FatalF("unhandled guest exception %08X at %08X (params %u: %08X %08X)",
-         code, eip, nparams, nparams > 0 ? Rd32(rec + 0x14) : 0,
-         nparams > 1 ? Rd32(rec + 0x18) : 0);
+  return false;
 }
 
 HLE("kernel32.dll", RaiseException, 4) {
   uint32_t code = Arg(c, 0), flags = Arg(c, 1), n = Arg(c, 2), args = Arg(c, 3);
   uint32_t eip = Rd32(c.esp);  // return address: where Windows reports it
-  Dispatch_(c, code, flags & kExceptionNoncontinuable, n, args, eip);
+  uint32_t params[15] = {};
+  for (uint32_t i = 0; i < std::min<uint32_t>(n, 15); i++) params[i] = Rd32(args + 4 * i);
+  if (!Dispatch_(c, code, flags & kExceptionNoncontinuable, n, params, eip))
+    FatalF("unhandled guest exception %08X raised from %08X (params %u: %08X %08X)",
+           code, eip, n, params[0], params[1]);
   return c.eax;
 }
 
@@ -152,4 +157,20 @@ HLE("kernel32.dll", UnhandledExceptionFilter, 1) {
 }
 
 }  // namespace
+
+// A host fault in guest memory, delivered as EXCEPTION_ACCESS_VIOLATION.
+// Called from the SIGSEGV handler on the faulting thread (signal stack).
+// Registers in `c` are those of the last spill (lifted code keeps them in
+// locals), so handlers get an approximate CONTEXT; the game's handlers
+// only use the exception record. The guest stack used for the handler
+// calls starts well below the stale ESP so live frames are not clobbered.
+bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr) {
+  uint32_t saved_esp = c.esp;
+  c.esp -= 0x40000;
+  uint32_t params[2] = {write ? 1u : 0u, addr};
+  bool cont = Dispatch_(c, 0xC0000005, 0, 2, params, 0);
+  c.esp = saved_esp;
+  return cont;
+}
+
 }  // namespace ds1::hle

@@ -13,6 +13,8 @@ set(DXVK_NATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native"
 
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
+set(DS1_LLVM_ROOT "/usr/lib/llvm/22" CACHE PATH
+    "LLVM install with include/llvm/Demangle and lib64/libLLVMDemangle.a")
 
 # The d3d9 backend is the Linux bring-up renderer only; macOS will use the
 # SDL_GPU (Metal) backend (see ARCHITECTURE.md).
@@ -54,7 +56,10 @@ if(DS1_GENERATED AND TARGET ds1_x87)
   # debug info for 100+ MB of generated source is not useful.
   add_library(ds1_lifted OBJECT ${DS1_GENERATED})
   target_include_directories(ds1_lifted PRIVATE src)
-  target_compile_options(ds1_lifted PRIVATE -O2 -g0 -fno-strict-aliasing)
+  # -fnon-call-exceptions: guest access violations are raised from the
+  # SIGSEGV handler and may unwind (GuestResume) out of the faulting frame.
+  target_compile_options(ds1_lifted PRIVATE -O2 -g0 -fno-strict-aliasing
+                         -fnon-call-exceptions)
 
   add_executable(ds1
     src/main.cpp
@@ -72,10 +77,27 @@ if(DS1_GENERATED AND TARGET ds1_x87)
     src/runtime/hle/kernel32_seh.cpp
     src/runtime/hle/kernel32_misc.cpp
     src/runtime/hle/shell_net.cpp
+    src/runtime/hle/dbghelp.cpp
+    src/runtime/hle/com.cpp
+    src/runtime/hle/ddraw.cpp
+    src/runtime/hle/d3d7.cpp
+    src/runtime/gfx/format.cpp
+    src/runtime/gfx/d3d9_device.cpp
     $<TARGET_OBJECTS:ds1_lifted>)
   target_include_directories(ds1 PRIVATE src)
   target_link_libraries(ds1 PRIVATE ds1_image ds1_x87 SDL3::SDL3
                         Threads::Threads)
+  # LLVM's Microsoft demangler backs dbghelp!UnDecorateSymbolName (FuBi).
+  target_include_directories(ds1 PRIVATE "${DS1_LLVM_ROOT}/include")
+  target_link_libraries(ds1 PRIVATE "${DS1_LLVM_ROOT}/lib64/libLLVMDemangle.a")
+  # Only the d3d9 backend sees dxvk's Windows/D3D9 headers.
+  set_source_files_properties(src/runtime/gfx/d3d9_device.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${DXVK_NATIVE_DIR}/include/dxvk"
+    COMPILE_DEFINITIONS "DXVK_WSI_SDL3")
+  target_link_libraries(ds1 PRIVATE
+    "${DXVK_NATIVE_DIR}/lib64/libdxvk_d3d9.so")
+  set_target_properties(ds1 PROPERTIES BUILD_RPATH "${DXVK_NATIVE_DIR}/lib64"
+    ENABLE_EXPORTS ON)  # symbol names in fault backtraces
 endif()
 
 # Maps DungeonSiege.exe into the guest arena and reports what the HLE

@@ -1,0 +1,26 @@
+# Build trees
+out/
+build/
+
+# Lifter output (regenerated from the EXE)
+generated/
+
+# Derived from the game binary (regenerate with tools/pe_symbols.py and
+# tools/ghidra/ExportFunctions.java)
+symbols/
+
+# Ghidra project (contains the game's code)
+ds1_recomp.gpr
+ds1_recomp.rep/
+ds1_recomp.lock
+ds1_recomp.lock~
+
+# Logs
+*.log
+
+# Never commit game files
+*.exe
+*.dll
+*.dsres
+*.dsmap
+*.bik

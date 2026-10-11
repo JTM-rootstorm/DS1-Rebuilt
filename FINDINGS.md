@@ -69,9 +69,13 @@ M4 findings:
 - Instruction lifting verified: tests/lift_x87_test (111 x87 forms) and
   tests/lift_int_test (13703 integer forms) run every form in the EXE
   lifted and natively from random states, bit-exact (configure with
-  -DDS1_GAME_EXE=...). Open: animated models snap/fly off and the farmer
-  conversation never triggers; suspect cross-thread memory ordering in
-  lifted code (compiler reordering of guest loads/stores).
+  -DDS1_GAME_EXE=...).
+- Animated models snapping/flying off (fixed): IDirect3DDevice7::
+  MultiplyTransform composed current x given; D3D's order is given x
+  current ("pMatrix times State"; dxvk's column-major current*given is
+  the same thing). The game calls it ~3.7M times in two minutes of play
+  to place objects and bones. DS1_CHECK_INDICES=1 checks indexed draws
+  against their vertex counts (clean).
 - Automated runs: DS1_BACKGROUND ignores the desktop's real input;
   DS1_TEST_INPUT=<file> scripts input (goto/move/pointer/click/key);
   run.sh-style runs use their own XDG_DATA_HOME profile. Arguments after

@@ -9,6 +9,8 @@
 // calling thread's x87 to single precision (DX7 SDK docs; see
 // ARCHITECTURE.md). We do the same to the guest FPU and log it.
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 
@@ -461,10 +463,14 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::MultiplyTransform", D3DD7_MultiplyTran
   if (it != d->transforms.end()) a = it->second;
   else for (int i = 0; i < 4; i++) a.m[i][i] = 1.0f;
   const guest::D3DMATRIX& b = *G<guest::D3DMATRIX>(Arg(c, 2));
+  // The new state is the given matrix times the current one (row-major
+  // D3DMATRIX): "the multiplication order is pMatrix times State". The
+  // reverse order misplaced every object the game positions this way
+  // (animated models snapping, the waterwheel flying off).
   guest::D3DMATRIX r{};
   for (int i = 0; i < 4; i++)
     for (int j = 0; j < 4; j++)
-      for (int k = 0; k < 4; k++) r.m[i][j] += a.m[i][k] * b.m[k][j];
+      for (int k = 0; k < 4; k++) r.m[i][j] += b.m[i][k] * a.m[k][j];
   d->transforms[Arg(c, 1)] = r;
   Gfx()->SetTransform(Arg(c, 1), &r.m[0][0]);
   return D3D_OK;
@@ -608,6 +614,18 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::PreLoad", D3DD7_PreLoad, 2) { return D
 
 // ---- drawing ---------------------------------------------------------------------------
 
+// DS1_CHECK_INDICES=1: report indexed draws whose indices reach past the
+// vertex count they pass (D3D7 does not enforce it; d3d9 UP draws do).
+void CheckIndices(const char* fn, const uint16_t* idx, uint32_t ni, uint32_t nv) {
+  static const bool on = std::getenv("DS1_CHECK_INDICES") != nullptr;
+  if (!on) return;
+  uint32_t mx = 0;
+  for (uint32_t i = 0; i < ni; i++) mx = std::max<uint32_t>(mx, idx[i]);
+  static int reported = 0;
+  if (mx >= nv && reported++ < 20)
+    WarnF("%s: max index %u >= vertex count %u (%u indices)\n", fn, mx, nv, ni);
+}
+
 HLE_NAMED("ddraw.dll", "IDirect3DDevice7::DrawPrimitive", D3DD7_DrawPrimitive, 6) {
   Dev(c);
   uint32_t prim = Arg(c, 1), fvf = Arg(c, 2), verts = Arg(c, 3), n = Arg(c, 4);
@@ -619,6 +637,7 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::DrawIndexedPrimitive", D3DD7_DrawIndex
   Dev(c);
   uint32_t prim = Arg(c, 1), fvf = Arg(c, 2), verts = Arg(c, 3), nv = Arg(c, 4),
            idx = Arg(c, 5), ni = Arg(c, 6);
+  CheckIndices("DrawIndexedPrimitive", reinterpret_cast<const uint16_t*>(GPtr(idx)), ni, nv);
   Gfx()->Draw(prim, fvf, GPtr(verts), nv, gfx::FvfStride(fvf),
               reinterpret_cast<const uint16_t*>(GPtr(idx)), ni);
   return D3D_OK;
@@ -640,6 +659,7 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::DrawIndexedPrimitiveVB", D3DD7_DrawInd
   if (!vb) return D3DERR_INVALIDCALL;
   uint32_t prim = Arg(c, 1), start = Arg(c, 3), nv = Arg(c, 4), idx = Arg(c, 5),
            ni = Arg(c, 6);
+  CheckIndices("DrawIndexedPrimitiveVB", reinterpret_cast<const uint16_t*>(GPtr(idx)), ni, nv);
   Gfx()->Draw(prim, vb->desc.dwFVF, GPtr(vb->mem + start * vb->stride), nv,
               vb->stride, reinterpret_cast<const uint16_t*>(GPtr(idx)), ni);
   return D3D_OK;

@@ -1,7 +1,22 @@
 # Architecture
 
-Goal: a native x86-64 Linux executable built from DungeonSiege.exe's
-machine code, running against the original game data, with no Wine.
+## Goals and hard constraints
+1. Native Linux first: one x86-64 ELF built from DungeonSiege.exe's
+   machine code, running against the original game data.
+2. No emulation in the shipping binary: no interpreter, no JIT, no
+   runtime x86 decoding, no fallback path. Every guest instruction that
+   can execute is lifted to C++ ahead of time. An indirect branch to an
+   address that was not lifted is a fatal error (reported with its VA so
+   it can be added to the manifest), never a slow path.
+3. No Wine, in any form, in the product: the Win32/DirectX surface the
+   game uses is reimplemented natively (HLE). Wine (with the original
+   EXE) is allowed only as a dev-time reference to compare behaviour, and
+   is never linked or shipped.
+4. 64-bit everywhere on the host: host code, the runtime and every
+   library are 64-bit; nothing needs i386 multilib.
+5. Portable to macOS on Apple Silicon with a native Metal renderer
+   later. Nothing in the lifter output or the runtime may assume an x86
+   host, 4 KiB pages, or Linux-only APIs outside a platform layer.
 
 ```
 DungeonSiege.exe ──Ghidra──> functions.tsv, jump tables ─┐
@@ -10,72 +25,154 @@ DungeonSiege.exe ──Ghidra──> functions.tsv, jump tables ─┐
                                                          │
                                           generated/*.cpp (gitignored)
                                                          │
-   ┌───────────────────── ds1 (native x86-64) ───────────┴────────────┐
-   │ lifted game code  ── guest arena (4 GiB @ host 0x100000000)       │
+   ┌──────────────── ds1 (native 64-bit, portable C++) ──┴────────────┐
+   │ lifted game code ── guest arena (4 GiB, base chosen at startup)   │
    │        │ calls to import thunks / COM vtables (0x7F000000+)       │
    │        ▼                                                          │
    │ HLE: kernel32 user32 gdi32 advapi32 ole32 mss32 binkw32 ddraw ... │
-   │        │            │              │            │                 │
-   │      POSIX        SDL3        dxvk-native     OpenAL / ffmpeg     │
-   │                 (window,      d3d9 (Vulkan)                       │
-   │                  input)                                           │
+   │        │          │                 │                 │           │
+   │     POSIX       SDL3         RenderDevice        OpenAL Soft,     │
+   │                (window,     ├ d3d9 (dxvk-native)  ffmpeg          │
+   │                 input)      └ SDL_GPU: Vulkan / Metal             │
    └───────────────────────────────────────────────────────────────────┘
 ```
 
+## What "64-bit" means here
+The host process, the runtime and all libraries are 64-bit. The game's
+own data layout stays 32-bit: its structures contain 32-bit pointers,
+its heap lives in a 4 GiB arena, and the lifted code computes 32-bit
+addresses, because that is what the compiled machine code does.
+Recompilation keeps the program's semantics; it does not retype its
+data. Giving the game 64-bit pointers in its own structures would mean
+decompiling every structure and function to source, which is a
+different project. The route there, if ever wanted, is incremental:
+replace lifted functions with hand-written C++ one subsystem at a time.
+
+The arena is not emulation: it is how the program's address space is
+represented. A guest load is one add of a base register plus the load
+itself, on both x86-64 and ARM64.
+
 ## Decisions
 
-### 64-bit host, sandboxed 32-bit guest (chosen)
-Guest memory is one 4 GiB reservation; guest VA A lives at host
-0x100000000 + A. The image is mapped at its real VAs (0x400000..), so
-every constant address in the code is valid unchanged.
+### Guest arena
+One 4 GiB reservation; guest VA A lives at host `base + A`. The image is
+mapped at its real VAs (0x400000..), so every constant address in the
+code is valid unchanged. `base` is chosen at startup (preferred
+0x10_0000_0000, which is free on Linux and outside macOS's 4 GiB
+__PAGEZERO and main-image range) and read from a global by lifted code.
 
-Rejected: a 32-bit (-m32) host with identity-mapped memory. Simpler
-pointers, but needs 32-bit SDL3/Vulkan/dxvk-native, and keeps the port
-stuck on i386. Little-endian guest on little-endian host means the
-sandbox costs only an add per access (constant base, folds into the
-addressing mode).
+Win32 memory semantics (4 KiB commit granularity, 64 KiB allocation
+granularity, page protections, VirtualQuery) are tracked in a per-guest-
+page table. Host protection is only "accessible or not" at host page
+granularity (4 KiB on x86 Linux, 16 KiB on Apple Silicon and Asahi), so
+nothing depends on host page faults for guest behaviour.
 
-### dxvk-native d3d9 as the renderer backend (chosen, worth it)
-The game is D3D7 fixed-function (TnL, texture stages, lights, fog).
-D3D9 still has the full fixed-function pipeline, and DXVK implements it
-with a mature FF shader generator, so an HLE D3D7 layer becomes mostly a
-1:1 state translation. This is exactly what the GOG wrapper does on
-Windows. Writing our own Vulkan/SDL_GPU FF emulation would duplicate
-that work. Cost: one shared library (libdxvk_d3d9.so) built from
-tools_ext/dxvk, Windows types from dxvk's native headers.
-
-DirectDraw itself (surfaces, flipping chain, Lock/Blt, colour keys,
-display modes) is ours to implement on top of d3d9 textures/surfaces and
-the SDL3 window. D7VK and Wine's ddraw are the references.
-
-### Own lifter, x86-32 -> C++
+### Lifter: x86-32 -> portable C++
 No maintained tool lifts Win32 x86 PE to portable C. The code is VC6:
 integer + x87 only, ~190 mnemonics, few SEH frames, so a purpose-built
 lifter is tractable (rexglue-style: one C++ function per guest function).
 
-- Decoder: Zydis (vendored via CMake FetchContent).
+- Decoder: Zydis (vendored via CMake FetchContent), build-time only.
 - Function list: Ghidra functions.tsv + all FuBi exports + a manifest
   (TOML) for overrides: extra entries, jump tables Ghidra misses,
   no-return functions, functions to replace with host code.
-- Context: `struct Ctx { u32 eax..edi, esp; flags; x87 st[8] as double,
-  top, cw/sw; fs base }`. Registers are cached in locals per function,
+- Output is plain C++20: no x86 intrinsics, no inline asm, no
+  `long double`, no reliance on host FPU state.
+- Context: `struct Ctx { u32 eax..edi, esp, eflags; X87 fpu; fs base }`,
+  one per guest thread. Registers are cached in locals per function and
   flags computed eagerly into locals (clang drops dead ones).
-- Memory: `*(T*)(kGuestBase + addr)` with kGuestBase a constant.
 - Calls: direct `call` -> C++ call; the real return address is pushed to
   the guest stack so code that reads it (__alloca_probe, SEH, FuBi)
   still works. `ret N` pops. Tail `jmp` to another entry -> tail call.
 - Indirect calls/jumps: dense table indexed by (va - 0x401000), 3.2 M
-  entries; addresses in the thunk region go to HLE handlers.
-- x87: 8-slot stack of double (D3D7 drops the FPU to 24-bit precision
-  anyway), control word honoured for rounding in fist/frndint.
-- SEH (~45 functions): fs:[0] chain lives in guest memory as on Windows.
-  RaiseException walks it and calls the lifted handlers. Resuming at a
-  continuation (catch/except target) throws a host exception carrying
-  {target va, esp, ebp}, caught by the lifted function that owns the
-  target label. Only functions with SEH continuations get the wrapper.
-- Differential testing: run single functions in the lifted build and in
-  a reference x86 emulator (Unicorn) with the same input state, compare
-  registers/memory. Most valuable for x87 and flags.
+  entries; addresses in the thunk region go to HLE handlers; anything
+  else is fatal (constraint 2).
+- SEH (~45 functions): the fs:[0] chain lives in guest memory as on
+  Windows. RaiseException walks it and calls the lifted handlers.
+  Resuming at a continuation (catch/except target) throws a host
+  exception carrying {target va, esp, ebp}, caught by the lifted
+  function that owns the target label. Only functions with SEH
+  continuations get the wrapper.
+- Differential testing (dev-time only, never linked into ds1): run
+  single functions lifted and in a reference x86 emulator (Unicorn)
+  from the same state and compare registers/memory/FPU. Most valuable
+  for x87 and flags.
+
+### x87: full 80-bit model
+The game depends on x87 state, so the FPU is modelled exactly, not
+mapped to double:
+- It calls its own setup routine (0x4143e6, 5 call sites) that sets
+  precision control to 24-bit and rounding control to chop (round
+  toward zero). All its float maths then runs under PC=24/RC=chop.
+- The VC6 CRT maths helpers switch to 64-bit precision (`or eax,0x300`,
+  `0x33f`) around their own work and restore afterwards, and __ftol
+  temporarily selects chop.
+- D3D7 changes the CW itself (below).
+
+Model per thread: 8 registers of 80 bits (sign, 15-bit exponent,
+64-bit explicit-integer mantissa), TOP, tag word, control word (PC, RC,
+exception masks) and status word (C0-C3, sticky exception flags, stack
+fault). Semantics to honour:
+- PC rounds the significand of fadd/fsub/fmul/fdiv/fsqrt (and their
+  pop/reverse/integer-operand forms) to 24/53/64 bits while the exponent
+  keeps the full 15-bit range (so PC=24 does not flush to float range).
+  Loads, stores, transcendentals and fprem are unaffected by PC.
+- RC applies to every rounding: arithmetic, fst/fstp to m32/m64,
+  fist/fistp, frndint.
+- fist/fistp out of range stores the integer indefinite (0x80000000 /
+  0x8000 / 0x8000000000000000); masked invalid sets IE.
+- fcom/fucom/ftst/fxam set C0/C2/C3 for the `fnstsw ax; sahf` idiom
+  (~2.5k sites), NaN/unordered included.
+- New threads start with the Windows default CW 0x027F (PC=53,
+  RC=nearest, all exceptions masked), independent of the creator.
+
+Implementation: Berkeley SoftFloat 3e `extF80` (BSD-3; has
+`extF80_roundingPrecision` 32/64/80 and all four rounding modes, and is
+portable C, so it works on ARM64 where `long double` is only 64 bits).
+SoftFloat has no transcendentals: fsin, fcos, fsincos, fptan, fpatan,
+fyl2x, fyl2xp1, f2xm1 and fscale need our own extF80 implementations
+(reference: Bochs' x87 code, LGPL, which also models the hardware's
+66-bit-pi argument reduction for fsin/fcos). Correctness first;
+a fast path (host float/double ops with the host rounding mode set,
+used only where it is provably identical) can come later, gated by the
+differential tests.
+
+### Graphics: D3D7 HLE over a RenderDevice interface
+The game is DirectDraw 7 + Direct3D 7 fixed-function (TnL, texture
+stages, lights, fog). Our ddraw/d3d7 HLE exposes guest-visible COM
+objects (object + vtable in guest memory, vtable entries are thunk VAs)
+and implements DirectDraw (surfaces, flipping chain, Lock/Blt, colour
+keys, display modes) itself. Below it sits a small internal
+RenderDevice interface with two backends:
+
+1. d3d9 via dxvk-native (Linux bring-up). D3D9 still has the D3D7
+   fixed-function pipeline and DXVK implements it, so this backend is
+   mostly 1:1 state translation and gets pixels on screen fastest. It
+   is also the reference image for backend 2. Same route as GOG's own
+   DX1-7 wrapper.
+2. SDL_GPU with our own D3D7 fixed-function shader generator: Vulkan on
+   Linux and native Metal on macOS (shaders compiled from one source to
+   SPIR-V and MSL at build time). This is the long-term backend on both
+   platforms. dxvk-native cannot be it: DXVK on macOS would need
+   MoltenVK, which lacks features DXVK requires, and would not be
+   native Metal anyway.
+
+D3D7 FPU side effect: the HLE must reproduce whatever the real runtime
+does to the guest thread's CW, because the game's own float maths runs
+on that state. What is known:
+- DX7 docs: DDSCL_FPUSETUP = the app keeps the FPU in D3D's preferred
+  state (single precision, exceptions masked); DDSCL_FPUPRESERVE = D3D
+  saves and restores the CW around each call. Without either, the
+  Windows runtime switches the thread to single precision and leaves it
+  there (the classic "D3D lowered my precision" effect). To confirm.
+- Wine's ddraw does not model that default: it never changes the CW the
+  app sees; in FPUPRESERVE mode each device method sets 0x37F and
+  restores the old CW afterwards (d3d_device7_fpu_preserve_vtbl). So
+  Wine is not a reference for this point.
+- Which flags DS passes, and whether its own 0x4143e6 call runs before
+  or after device creation, is open (FINDINGS.md). If D3D's change comes
+  last, PC=24 with RC=chop from the game's routine survives anyway,
+  since D3D only touches precision and masks.
 
 ### HLE surface (from the 381 imports + dynamic loads)
 - kernel32: heap/virtual memory in the arena, files with case-insensitive
@@ -89,22 +186,35 @@ lifter is tractable (rexglue-style: one C++ function per guest function).
   text through GDI (check with Ghidra). Dialogs stubbed.
 - advapi32: registry backed by a small file.
 - ole32: CoCreateInstance fails for DirectPlay8 (multiplayer off).
-- ddraw/d3d7: guest-visible COM objects (object + vtable in guest memory,
-  vtable entries are thunk VAs) backed by host objects on d3d9.
-- mss32 (Miles, 68 calls): OpenAL Soft for 2D/3D samples and streams,
-  MP3 via a small decoder (dr_mp3/minimp3).
+- mss32 (Miles, 68 calls): OpenAL Soft for 2D/3D samples and streams
+  (bundled on macOS, where the system OpenAL is deprecated), MP3 via a
+  small decoder (dr_mp3/minimp3).
 - binkw32: stub first (BinkOpen -> NULL skips videos), later ffmpeg.
 - dbghelp: UnDecorateSymbolName for FuBi; the rest stubbed.
 - wsock32, imm32, version, shfolder: stubs / small shims.
 
+All of it is written against POSIX + SDL3 + the RenderDevice, with
+platform specifics (mmap flags, paths, page size) in one place.
+
+### Known macOS risk: memory ordering
+x86 is TSO; ARM64 is weakly ordered. Lifted code that shares data
+between threads without a lock would be correct on x86-64 hosts and
+racy on Apple Silicon. Plan: every HLE synchronisation call (critical
+sections, events, Interlocked*, waits) is a full barrier, `lock`-prefixed
+instructions become seq_cst atomics, and any lock-free hand-off found in
+the game's threads (loader, streaming audio) gets explicit barriers via
+the manifest. Revisit before the macOS port.
+
 ## Milestones
 - M0 (done): survey, Ghidra project, symbols, dxvk-native + smoke test,
   guest arena + PE mapper + import thunks.
-- M1: lifter MVP. Lift everything; unknown instructions trap with their
-  VA. HLE stubs log every call. Run the CRT entry (0x409dcb) to WinMain.
+- M1: lifter MVP. Lift everything, including the full x87 model; HLE
+  stubs log every call. Run the CRT entry (0x409dcb) to WinMain.
 - M2: Win32 breadth: files, memory, threads, TLS, SEH, registry. Game
   initialises through tank mounting up to DirectDraw creation.
-- M3: DirectDraw/D3D7 on dxvk-native + SDL3 window and input. Main
-  menu renders.
-- M4: Miles audio, Bink, remaining HLE. Single-player playable.
-- M5: Fixes and niceties (resolutions, widescreen, frame pacing).
+- M3: DirectDraw/D3D7 on the d3d9 backend + SDL3 window and input.
+  Main menu renders.
+- M4: Miles audio, Bink, remaining HLE. Single-player playable on Linux.
+- M5: SDL_GPU backend (Vulkan) with the fixed-function generator,
+  matched against the d3d9 backend.
+- M6: macOS arm64 build: Metal via SDL_GPU, memory-ordering audit.

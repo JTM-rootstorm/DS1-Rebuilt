@@ -1,33 +1,43 @@
 #pragma once
 // The guest (32-bit x86) address space lives in one 4 GiB host reservation.
-// Guest address A is host address base() + A. Pages are reserved PROT_NONE
-// and committed on demand, so stray guest accesses fault instead of
-// silently hitting host memory.
+// Guest address A is host address base() + A. The base is picked at
+// startup and is not a compile-time constant.
+//
+// Win32 memory semantics (4 KiB commit granularity, protections) are kept
+// in a per-guest-page table. The host only distinguishes accessible from
+// inaccessible, at host page granularity (4 KiB on x86-64 Linux, 16 KiB on
+// Apple Silicon), so guest behaviour never depends on host page faults.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace ds1 {
 
 using gaddr = uint32_t;
 
-enum class Prot : int { None = 0, R = 1, W = 2, X = 4, RW = 3, RX = 5, RWX = 7 };
+enum class Prot : uint8_t { None = 0, R = 1, W = 2, X = 4, RW = 3, RX = 5, RWX = 7 };
 
 class GuestMemory {
  public:
   static constexpr uint64_t kSize = 1ull << 32;
-  static constexpr uint32_t kPageSize = 0x1000;
+  static constexpr uint32_t kPageSize = 0x1000;  // guest (Win32) page
 
   bool Reserve();
   void Release();
 
-  // Commit [va, va+size) rounded out to pages. Returns false on failure.
+  // Commit [va, va+size) rounded out to guest pages; newly committed pages
+  // read as zero. Protect fails if any page in the range is uncommitted,
+  // like VirtualProtect. Decommitted pages read as zero when recommitted.
   bool Commit(gaddr va, uint32_t size, Prot prot);
   bool Protect(gaddr va, uint32_t size, Prot prot);
   void Decommit(gaddr va, uint32_t size);
+  bool IsCommitted(gaddr va) const;
+  Prot QueryProt(gaddr va) const;
 
   uint8_t* base() const { return base_; }
+  size_t host_page_size() const { return host_page_; }
 
   template <typename T = uint8_t>
   T* ptr(gaddr va) const {
@@ -37,8 +47,8 @@ class GuestMemory {
     return static_cast<gaddr>(static_cast<const uint8_t*>(host) - base_);
   }
 
-  // x86 is little-endian like the host, so loads/stores are plain copies.
-  // memcpy keeps unaligned guest accesses well-defined.
+  // Guest and every supported host are little-endian, so loads/stores are
+  // plain copies. memcpy keeps unaligned guest accesses well-defined.
   template <typename T>
   T read(gaddr va) const {
     T v;
@@ -51,7 +61,15 @@ class GuestMemory {
   }
 
  private:
+  static constexpr uint8_t kCommitted = 0x80;
+
+  // Host pages overlapping [va, va+size), as a byte offset range.
+  void HostRange(gaddr va, uint32_t size, uint64_t* start, uint64_t* end) const;
+  bool HostPageInUse(uint64_t host_off) const;
+
   uint8_t* base_ = nullptr;
+  size_t host_page_ = 0;
+  std::vector<uint8_t> pages_;  // one entry per guest page: Prot | kCommitted
 };
 
 }  // namespace ds1

@@ -1,7 +1,10 @@
 # Findings
 
 ## Status (2026-10-10)
-Groundwork only. Done:
+Groundwork only; git repo initialised (main). Design constraints added
+after review: full 80-bit x87 model, 64-bit host only, no emulation or
+Wine in the product, macOS arm64 + Metal later (see ARCHITECTURE.md).
+Done:
 - Binary survey (below), Ghidra project imported + auto-analysed (65 s).
 - symbols/: exports.tsv (3230 demangled FuBi functions), imports.tsv,
   functions.tsv (Ghidra: 27660 functions, 405 multi-chunk, 33 thunks),
@@ -32,6 +35,25 @@ Next: milestone M1 in ARCHITECTURE.md (lifter MVP, reach WinMain).
   code). x87 heavy: 18k fstp, 13.7k fld, ~2.5k fnstsw+sahf compare idiom,
   164 fistp, 51 fldcw, fsin/fcos/fsincos/fpatan/fsqrt present.
 - SEH: only ~45 functions install fs:[0] frames. C++ EH is rare.
+
+## x87 control word (why the FPU must be modelled exactly)
+- FUN_004143e6 is the game's FPU setup: fnstcw; `and eax,0xfcff`
+  (PC=24-bit); `or eax,0xc00` (RC=chop, round toward zero); fldcw.
+  Call sites: 0x414168 (FUN_0041413d), 0x43f2ac (not inside a Ghidra
+  function yet), 0x57180f (FUN_005717f6), 0x5f1586 (FUN_005f157a),
+  0x64e205 (FUN_0064e0f7). Likely main thread init plus worker thread
+  entries; to confirm. So game float maths runs at PC=24, RC=chop.
+- VC6 CRT maths helpers (FUN_00635f56, FUN_0063615c and unlabelled code
+  around 0x63579c-0x63649c, FUN_006351c5) switch to PC=64 (`or eax,0x300`
+  / `0x33f`, `and eax,0xf3ff` = RC nearest) around their work.
+- __ftol (0x631810) sets RC=chop temporarily (`or ah,0xc`); same in
+  FUN_0040c02f.
+- Open: the DDSCL flags passed to IDirectDraw7::SetCooperativeLevel
+  (vtable +0x50). DirectDrawCreateEx is called from 0x64efbd and
+  0x65ce61 (thunk 0x71eb72); the +0x50 calls near there are
+  IDirect3DDevice7::SetRenderState (device ptr at [renderer+0x600]), not
+  SetCooperativeLevel. Find it via Ghidra (decompile callers of the
+  stored IDirectDraw7 pointer).
 - 126 indirect `jmp` (switch tables, mostly); Ghidra recovers these.
 
 ## FuBi exports (huge free symbol source)

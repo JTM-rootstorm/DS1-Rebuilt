@@ -20,6 +20,21 @@ ARCHITECTURE.md.
 - Rebuild dxvk-native (only if tools_ext/dxvk changes):
   `ninja -C ../tools_ext/dxvk/build-native install`
 
+## Product constraints (see ARCHITECTURE.md)
+- No emulation in the shipping binary: no interpreter, JIT, runtime x86
+  decoding or slow-path fallback. Unlifted code reached at runtime is a
+  fatal error naming the VA; fix it in the lifter/manifest.
+- No Wine in the product, ever. Wine running the original EXE is allowed
+  only as a dev-time behaviour reference. Unicorn only in tests.
+- 64-bit host only; no i386/multilib dependencies.
+- Keep everything portable to macOS arm64: in lifted code and the
+  runtime, no x86 intrinsics, no inline asm, no `long double`, no host
+  FPU/x87 state, no assumption of 4 KiB host pages, no Linux-only
+  syscalls/flags outside the platform layer (guard with #ifdef).
+- The x87 FPU is modelled exactly (80-bit registers, CW precision and
+  rounding, SW condition codes, per-thread state). Never map x87 to
+  host double.
+
 ## Rules
 - The path contains a space ("Dungeon Siege"): always quote it in shell
   commands, scripts and CMake.
@@ -28,8 +43,11 @@ ARCHITECTURE.md.
   call; keep it that way.
 - Guest addresses must stay below 0x80000000: the EXE is not
   large-address-aware and may compare pointers as signed.
-- The guest arena is reserved at host 0x100000000 (guest VA + base). Do not
-  hand host pointers to guest code; convert with GuestMemory::to_guest.
+- The guest arena base is chosen at startup (preferred 0x1000000000) and
+  is not a compile-time constant. Do not hand host pointers to guest
+  code; convert with GuestMemory::to_guest.
+- Commits: GPG-signed (global config), no Claude co-author trailers or
+  generated-by markers.
 - Python scripts that read game files run with `python3 -I`.
 - /usr/share/ghidra/support/analyzeHeadless has no exec bit: run it as
   `bash /usr/share/ghidra/support/analyzeHeadless ...`.

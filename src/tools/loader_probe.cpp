@@ -27,7 +27,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::printf("guest arena at host %p\n", static_cast<void*>(mem.base()));
+  std::printf("guest arena at host %p (host page %zu)\n",
+              static_cast<void*>(mem.base()), mem.host_page_size());
   std::printf("image %#010x..%#010x entry %#010x\n", img.image_base,
               img.image_base + img.image_size, img.entry);
   std::printf("large-address-aware: %s\n",
@@ -36,7 +37,8 @@ int main(int argc, char** argv) {
               img.stack_reserve, img.stack_commit, img.heap_reserve,
               img.heap_commit);
   for (const auto& s : img.sections)
-    std::printf("  %-8s %#010x +%#x\n", s.name.c_str(), s.va, s.vsize);
+    std::printf("  %-8s %#010x +%#x prot %d\n", s.name.c_str(), s.va, s.vsize,
+                static_cast<int>(mem.QueryProt(s.va)));
 
   // FuBi walks the export directory of the in-memory image, so the headers
   // must be mapped where GetModuleHandle(NULL) points.

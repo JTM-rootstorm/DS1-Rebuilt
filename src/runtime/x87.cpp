@@ -1073,6 +1073,78 @@ Q CosTail(Q z) { return QMul(Poly(kCosCoef, z), z); }
 
 enum class Trig { Sin, Cos };
 
+// --- fixed-point fast path for sin/cos ----------------------------------
+//
+// The same series as SinTail/CosTail, evaluated in unsigned 128-bit fixed
+// point (value = v / 2^127) instead of binary128. Every magnitude stays in
+// [0, 1], so Horner's scheme with alternating signs never goes negative:
+// t = a14; t = a(k) - z t; ...; sin r = r (1 - z t), cos r = 1 - z t.
+// Its error is below 2^-118, the binary128 path's below 2^-108; when the
+// result lies further than 2^-100 from every rounding boundary of the
+// 64-bit significand both must round the same way, so the fast result is
+// used. Otherwise (or for tiny r) the binary128 path decides.
+
+using U128 = unsigned __int128;
+
+// (a * b) >> 127 for a, b <= 2^127.
+U128 MulFix(U128 a, U128 b) {
+  uint64_t a0 = uint64_t(a), a1 = uint64_t(a >> 64);
+  uint64_t b0 = uint64_t(b), b1 = uint64_t(b >> 64);
+  U128 p00 = U128(a0) * b0, p01 = U128(a0) * b1, p10 = U128(a1) * b0,
+       p11 = U128(a1) * b1;
+  U128 mid = (p00 >> 64) + uint64_t(p01) + uint64_t(p10);
+  U128 hi = p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+  return (hi << 1) | (uint64_t(mid) >> 63);
+}
+
+// |q| as fixed point (truncated), for |q| < 2.
+U128 FixFromQ(Q q) {
+  int e = int((q.v[1] >> 48) & 0x7FFF) - 0x3FFF;
+  if (e < -127) return 0;
+  U128 m = (U128(q.v[1] & 0xFFFFFFFFFFFFull) | (U128(1) << 48)) << 64 | q.v[0];
+  int sh = e + 15;  // m has its leading one at bit 112
+  return sh >= 0 ? m << sh : sh > -128 ? m >> -sh : 0;
+}
+
+struct FixCoefs {
+  U128 sin[14], cos[14];
+};
+const FixCoefs& Coefs() {
+  static const FixCoefs c = [] {
+    FixCoefs f{};
+    for (int k = 0; k < 14; ++k) {
+      f.sin[k] = FixFromQ(Ld(kSinCoef[k]));
+      f.cos[k] = FixFromQ(Ld(kCosCoef[k]));
+    }
+    return f;
+  }();
+  return c;
+}
+
+bool FastTrig(const Reduced& red, bool use_cos, bool sign, int rc, Rounded* out) {
+  if (g_softfloat_only) return false;
+  U128 r = FixFromQ(red.r);
+  if (r < (U128(1) << 100)) return false;  // r < 2^-27: let binary128 decide
+  U128 z = MulFix(r, r);
+  const U128* a = use_cos ? Coefs().cos : Coefs().sin;
+  U128 t = a[13];
+  for (int k = 12; k >= 0; --k) t = a[k] - MulFix(z, t);
+  U128 v = use_cos ? (U128(1) << 127) - MulFix(z, t) : r - MulFix(r, MulFix(z, t));
+  // Normalise: bit 127 set; exp so that value = (hi + lo/2^64)/2^63 * 2^(exp-0x3FFF).
+  int lz = Clz128(uint64_t(v >> 64), uint64_t(v));
+  v <<= lz;
+  uint64_t hi = uint64_t(v >> 64), lo = uint64_t(v);
+  // 2^-100 in units of lo (2^(-127-lz)); boundaries are lo = 0 and 2^63.
+  int mshift = 27 + lz;
+  if (mshift >= 61) return false;
+  uint64_t margin = 1ull << mshift;
+  uint64_t d_half = lo > kHalf ? lo - kHalf : kHalf - lo;
+  uint64_t d_edge = lo < kHalf ? lo : 0 - lo;
+  if (d_half <= margin || d_edge <= margin) return false;
+  *out = RoundPack(sign, 0x3FFF - lz, hi, lo, 64, rc);
+  return true;
+}
+
 // One of +-sin(|x|) / +-cos(|x|) after reduction, rounded with the guest
 // RC; `want` selects sin or cos of the original |x|.
 Rounded TrigResult(const Reduced& red, Trig want, bool negate, int rc) {
@@ -1081,6 +1153,11 @@ Rounded TrigResult(const Reduced& red, Trig want, bool negate, int rc) {
   unsigned n = (red.n + (want == Trig::Cos ? 1 : 0)) & 3;
   bool use_cos = n & 1;
   bool neg = (n & 2) != 0;
+  {
+    Rounded fast;
+    if (FastTrig(red, use_cos, neg ^ (use_cos ? false : red.r_neg) ^ negate, rc, &fast))
+      return fast;
+  }
   Q z = QMul(red.r, red.r);
   Q v;
   if (use_cos) {

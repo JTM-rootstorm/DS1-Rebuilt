@@ -93,6 +93,15 @@ M4 findings:
   protector in ds1_x87. tests/x87_fast_test checks the fast paths against
   SoftFloat (portable; 4M cases, mutation-checked); x87_test and lift_x87
   still pass against the hardware.
+- fsin/fcos/fsincos: the series now runs in 128-bit fixed point; the
+  result is used only when it lies more than 2^-100 from every rounding
+  boundary (both methods' errors are far below that), else the binary128
+  path decides, so results are bit-identical to before (x87_fast_test,
+  0 mismatches even at a 2^-120 margin). Binary128 dropped from ~13% to
+  ~3% of the main thread in the rainy forest past the farm, which still
+  runs ~26 ms/frame: millions of plain x87 instructions per frame (CPU
+  skinning: quaternion rotate 0x5338E9 alone is ~19%) at ~5 ns each.
+  ThinLTO of lifted code + ds1_x87 gained nothing measurable.
 - Cursor glitches on mouse-over (fixed): the game draws a software
   cursor (0x656E02) only while GetForegroundWindow is its window: save
   the pixels under it, blend a 64x64 ARGB image, Blt back. The main

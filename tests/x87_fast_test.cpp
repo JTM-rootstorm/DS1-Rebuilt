@@ -40,6 +40,23 @@ uint64_t Sig() {
   }
 }
 
+// Trig operands: mostly everyday angles, some needing reduction, some
+// close to multiples of pi/2.
+F80 Angle() {
+  F80 v{Sig(), uint16_t(0x3FFF - 30 + int(Rand() % 52))};
+  if (Rand() % 4 == 0) v.se = uint16_t(0x3FFF - 2 + int(Rand() % 6));
+  if (Rand() % 8 == 0) {  // k * pi/2 nudged: 0xC90FDAA22168C235 * 2^-63 = pi/2 * ...
+    static const uint64_t kHalfPi = 0xC90FDAA22168C235ull;
+    int k = 1 + int(Rand() % 16);
+    unsigned __int128 p = (unsigned __int128)kHalfPi * k;
+    int sh = 0;
+    while (p >> (64 + sh)) ++sh;
+    v = {uint64_t(p >> sh) ^ (Rand() % 1024), uint16_t(0x3FFF + sh)};
+  }
+  if (Rand() & 1) v.se |= 0x8000;
+  return v;
+}
+
 int Exp(int near) {
   switch (Rand() % 7) {
     case 0: return 1 + int(Rand() % 0x7FFE);                  // anywhere
@@ -70,7 +87,8 @@ struct Snap {
   uint16_t sw, tw;
 };
 
-// k < 6: arithmetic; 6: fst m32; 7: fst m64 (result in r[0].sig).
+// k < 6: arithmetic; 6: fst m32; 7: fst m64 (result in r[0].sig);
+// 8: fsin, 9: fcos, 10: fsincos.
 Snap Run(bool softfloat_only, uint16_t cw, F80 a, F80 b, int k, bool st0_first) {
   static const Op kOps[] = {Op::Add, Op::Mul, Op::Sub, Op::SubR, Op::Div, Op::DivR};
   ds1::x87::g_softfloat_only = softfloat_only;
@@ -84,6 +102,12 @@ Snap Run(bool softfloat_only, uint16_t cw, F80 a, F80 b, int k, bool st0_first) 
     stored = ds1::x87::StoreF32(s);
   else if (k == 7)
     stored = ds1::x87::StoreF64(s);
+  else if (k == 8)
+    ds1::x87::Sin(s);
+  else if (k == 9)
+    ds1::x87::Cos(s);
+  else if (k == 10)
+    ds1::x87::SinCos(s);
   else if (st0_first)
     ds1::x87::ArithSt0Sti(s, kOps[k], 1);
   else
@@ -108,7 +132,8 @@ bool Same(const Snap& x, const Snap& y) {
 int main(int argc, char** argv) {
   long cases = argc > 1 ? std::atol(argv[1]) : 2000000;
   g_rng.seed(argc > 2 ? std::strtoull(argv[2], nullptr, 0) : 1);
-  static const char* kNames[] = {"add", "mul", "sub", "subr", "div", "divr", "fst m32", "fst m64"};
+  static const char* kNames[] = {"add", "mul", "sub", "subr", "div", "divr",
+                                 "fst m32", "fst m64", "fsin", "fcos", "fsincos"};
   static const uint16_t kPc[] = {0x0000, 0x0200, 0x0300};
   long fails = 0;
   for (long n = 0; n < cases; n++) {
@@ -116,14 +141,15 @@ int main(int argc, char** argv) {
     F80 b = Value(a.se & 0x7FFF);
     if (Rand() % 16 == 0) b = {a.sig ^ (Rand() % 4), a.se};  // cancellation
     uint16_t cw = uint16_t(0x007F | kPc[Rand() % 3] | (Rand() % 4) << 10);
-    int k = int(Rand() % 8);
+    int k = int(Rand() % 11);
+    if (k >= 8) a = Angle();
     bool st0_first = Rand() & 1;
     Snap fast = Run(false, cw, a, b, k, st0_first);
     Snap ref = Run(true, cw, a, b, k, st0_first);
     if (Same(fast, ref)) continue;
     if (++fails <= 20) {
       int dst = st0_first ? 0 : 1;  // physical reg after the two pushes
-      int p = k >= 6 ? 0 : (6 + dst) & 7;
+      int p = k == 6 || k == 7 ? 0 : k >= 8 ? 6 : (6 + dst) & 7;
       std::printf("FAIL %s%s cw=%04X a=%04X:%016" PRIX64 " b=%04X:%016" PRIX64
                   "\n  fast %04X:%016" PRIX64 " sw=%04X\n  soft %04X:%016" PRIX64
                   " sw=%04X\n",

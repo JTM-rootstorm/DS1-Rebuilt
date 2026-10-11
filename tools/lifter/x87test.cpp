@@ -140,4 +140,230 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
   return 0;
 }
 
+// ---- integer forms ---------------------------------------------------------
+//
+// Same idea for integer instructions. Memory operands are rewritten to
+// [R] (ModRM mod=0) with R a base register the instruction does not use
+// otherwise; the test sets R to a buffer mapped at the same low address
+// natively and in the guest arena, so every register value is identical
+// in both runs. Excluded: stack and control flow, esp operands, segment
+// overrides, and opcodes that mean something else in 64-bit mode.
+
+namespace {
+
+bool Excluded(const Insn& in) {
+  using namespace std;
+  switch (in.d.meta.category) {
+    case ZYDIS_CATEGORY_X87_ALU: case ZYDIS_CATEGORY_COND_BR:
+    case ZYDIS_CATEGORY_UNCOND_BR: case ZYDIS_CATEGORY_CALL:
+    case ZYDIS_CATEGORY_RET: case ZYDIS_CATEGORY_PUSH: case ZYDIS_CATEGORY_POP:
+    case ZYDIS_CATEGORY_SYSTEM: case ZYDIS_CATEGORY_INTERRUPT:
+    case ZYDIS_CATEGORY_IO: case ZYDIS_CATEGORY_IOSTRINGOP:
+    case ZYDIS_CATEGORY_SEGOP: case ZYDIS_CATEGORY_MMX:
+    case ZYDIS_CATEGORY_SSE: case ZYDIS_CATEGORY_FLAGOP:
+      if (in.d.meta.category == ZYDIS_CATEGORY_FLAGOP &&
+          (in.d.mnemonic == ZYDIS_MNEMONIC_SAHF || in.d.mnemonic == ZYDIS_MNEMONIC_LAHF ||
+           in.d.mnemonic == ZYDIS_MNEMONIC_CLC || in.d.mnemonic == ZYDIS_MNEMONIC_STC ||
+           in.d.mnemonic == ZYDIS_MNEMONIC_CMC || in.d.mnemonic == ZYDIS_MNEMONIC_CLD ||
+           in.d.mnemonic == ZYDIS_MNEMONIC_STD))
+        return false;
+      return true;
+    default:
+      break;
+  }
+  switch (in.d.mnemonic) {
+    case ZYDIS_MNEMONIC_CPUID: case ZYDIS_MNEMONIC_RDTSC: case ZYDIS_MNEMONIC_LEAVE:
+    case ZYDIS_MNEMONIC_ENTER: case ZYDIS_MNEMONIC_DAA: case ZYDIS_MNEMONIC_DAS:
+    case ZYDIS_MNEMONIC_AAA: case ZYDIS_MNEMONIC_AAS: case ZYDIS_MNEMONIC_AAM:
+    case ZYDIS_MNEMONIC_AAD: case ZYDIS_MNEMONIC_BOUND: case ZYDIS_MNEMONIC_ARPL:
+    case ZYDIS_MNEMONIC_LDS: case ZYDIS_MNEMONIC_LES: case ZYDIS_MNEMONIC_SALC:
+    case ZYDIS_MNEMONIC_PUSHAD: case ZYDIS_MNEMONIC_POPAD: case ZYDIS_MNEMONIC_NOP:
+    case ZYDIS_MNEMONIC_HLT: case ZYDIS_MNEMONIC_INT3: case ZYDIS_MNEMONIC_UD2:
+    case ZYDIS_MNEMONIC_LOOP: case ZYDIS_MNEMONIC_LOOPE: case ZYDIS_MNEMONIC_LOOPNE:
+    case ZYDIS_MNEMONIC_JCXZ: case ZYDIS_MNEMONIC_JECXZ:
+    case ZYDIS_MNEMONIC_FWAIT: case ZYDIS_MNEMONIC_XLAT:
+      return true;
+    default:
+      break;
+  }
+  if (in.d.opcode == 0x82 && in.d.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT) return true;
+  for (int i = 0; i < in.d.operand_count; i++) {
+    const auto& o = in.ops[i];
+    if (o.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+      ZydisRegister r = o.reg.value;
+      if (r == ZYDIS_REGISTER_ESP || r == ZYDIS_REGISTER_SP || r == ZYDIS_REGISTER_SPL ||
+          r == ZYDIS_REGISTER_EIP || ZydisRegisterGetClass(r) == ZYDIS_REGCLASS_SEGMENT)
+        return true;
+    }
+    if (o.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+      if (o.mem.segment == ZYDIS_REGISTER_FS || o.mem.segment == ZYDIS_REGISTER_GS)
+        return true;
+      // lea computes an address; it keeps its original operand, which must
+      // not involve esp, nor be absolute (RIP-relative in 64-bit mode).
+      if (in.d.mnemonic == ZYDIS_MNEMONIC_LEA &&
+          (o.mem.base == ZYDIS_REGISTER_ESP || o.mem.index == ZYDIS_REGISTER_ESP ||
+           (o.mem.base == ZYDIS_REGISTER_NONE && o.mem.index == ZYDIS_REGISTER_NONE)))
+        return true;
+    }
+  }
+  return false;
+}
+
+// 32-bit GPR number (0..7) behind a register of any width, or -1.
+int GprNum(ZydisRegister r) {
+  ZydisRegister l = ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LEGACY_32, r);
+  if (l >= ZYDIS_REGISTER_EAX && l <= ZYDIS_REGISTER_EDI) return int(l - ZYDIS_REGISTER_EAX);
+  return -1;
+}
+
+}  // namespace
+
+int WriteIntTest(const Program& p, const Decoder& dec, const std::string& out,
+                 const char* prologue) {
+  struct IForm {
+    std::vector<uint8_t> bytes;
+    std::string text;
+    int base = -1;  // register holding the buffer address, -1: no memory
+    uint32_t undef = 0;
+    uint32_t example_va = 0;
+  };
+  std::map<std::vector<uint8_t>, IForm> forms;
+  for (uint32_t e : p.entries) {
+    Function f;
+    BuildFunction(p, dec, e, &f);
+    for (const auto& [va, in] : f.insns) {
+      if (!in.ok || Excluded(in)) continue;
+      const uint8_t* raw = p.Bytes(va);
+      std::vector<uint8_t> b;
+      int base = -1;
+      bool has_modrm = in.d.attributes & ZYDIS_ATTRIB_HAS_MODRM;
+      bool mem = false;
+      for (int i = 0; i < in.d.operand_count_visible; i++)
+        if (in.ops[i].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            in.d.mnemonic != ZYDIS_MNEMONIC_LEA)
+          mem = true;
+      // Registers the instruction uses in any role (explicit or implicit).
+      uint32_t used = 0;
+      for (int i = 0; i < in.d.operand_count; i++)
+        if (in.ops[i].type == ZYDIS_OPERAND_TYPE_REGISTER) {
+          int n = GprNum(in.ops[i].reg.value);
+          if (n >= 0) used |= 1u << n;
+        }
+      bool string_op = in.d.meta.category == ZYDIS_CATEGORY_STRINGOP;
+      bool moffs = !has_modrm && in.d.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+                   in.d.opcode >= 0xA0 && in.d.opcode <= 0xA3;
+      if (moffs) {
+        // mov al/eax, [moffs32] and back: in 64-bit mode A0-A3 take an
+        // 8-byte address, so use the ModRM form (8A/8B/88/89) on [base].
+        static const uint8_t op[] = {0x8A, 0x8B, 0x88, 0x89};
+        for (int r : {3, 6, 7, 1, 2})
+          if (!(used & (1u << r))) {
+            base = r;
+            break;
+          }
+        for (int i = 0; i < in.d.raw.prefix_count; i++)
+          if (!IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        b.push_back(op[in.d.opcode - 0xA0]);
+        b.push_back(uint8_t((0 << 3) | base));  // reg = al/ax/eax
+      } else if (string_op) {
+        // Implicit [esi]/[edi]: the test points them into the buffer.
+        for (int i = 0; i < in.d.length; i++)
+          if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+      } else if (has_modrm && mem) {
+        int reg = in.d.raw.modrm.reg;
+        for (int r : {3, 6, 7, 1, 2, 0})
+          if (r != reg && !(used & (1u << r))) {
+            base = r;
+            break;
+          }
+        if (base < 0) continue;
+        int modrm_off = in.d.raw.modrm.offset;
+        for (int i = 0; i < modrm_off; i++)
+          if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        b.push_back(uint8_t((reg << 3) | base));
+        // Immediates follow ModRM/SIB/displacement: keep them.
+        int imm_off = in.d.raw.imm[0].size ? in.d.raw.imm[0].offset : in.d.length;
+        for (int i = imm_off; i < in.d.length; i++) b.push_back(raw[i]);
+      } else {
+        for (int i = 0; i < in.d.length; i++)
+          if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        // inc/dec r32 (40-4F) are REX prefixes in 64-bit mode: use FF /0, /1.
+        if (b.size() == 1 && b[0] >= 0x40 && b[0] <= 0x4F)
+          b = {0xFF, uint8_t(0xC0 + (b[0] >= 0x48 ? 8 : 0) + (b[0] & 7))};
+        else if (b.size() == 2 && b[0] == 0x66 && b[1] >= 0x40 && b[1] <= 0x4F)
+          b = {0x66, 0xFF, uint8_t(0xC0 + (b[1] >= 0x48 ? 8 : 0) + (b[1] & 7))};
+      }
+      if (forms.count(b)) continue;
+      // Re-decode the rewritten bytes to make sure they mean the same thing.
+      IForm fm;
+      fm.bytes = b;
+      fm.text = dec.Format(in);
+      fm.base = base;
+      fm.undef = in.d.cpu_flags ? in.d.cpu_flags->undefined : 0;
+      fm.example_va = va;
+      forms[b] = fm;
+    }
+  }
+
+  Program q;
+  if (!q.mem.Reserve()) return 1;
+  const uint32_t code = 0x00401000;
+  uint32_t size = uint32_t(forms.size()) * 32 + 0x1000;
+  q.mem.Commit(code, size, ds1::Prot::RWX);
+  q.text_lo = code;
+  q.text_hi = code + size;
+  std::vector<std::pair<uint32_t, const IForm*>> slots;
+  uint32_t va = code;
+  for (const auto& [k, fm] : forms) {
+    std::vector<uint8_t> c = fm.bytes;
+    c.push_back(0xC3);
+    for (size_t i = 0; i < c.size(); i++) q.mem.write<uint8_t>(va + uint32_t(i), c[i]);
+    q.entries.insert(va);
+    slots.push_back({va, &fm});
+    va += 32;
+  }
+  Emitter em(q, dec);
+  std::string body;
+  std::set<uint32_t> refs;
+  EmitStats st;
+  for (const auto& [sva, fm] : slots) {
+    Function f;
+    BuildFunction(q, dec, sva, &f);
+    em.EmitFunction(f, &body, &refs, &st);
+  }
+  std::string o = prologue;
+  for (const auto& [sva, fm] : slots) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "void f_%08X(::ds1::Ctx& c);\n", sva);
+    o += buf;
+  }
+  o += body;
+  o += "}  // namespace ds1::gen\n\n#include \"lift_int_forms.h\"\n";
+  o += "extern const IntForm kIntForms[] = {\n";
+  for (const auto& [sva, fm] : slots) {
+    std::string bytes;
+    for (uint8_t x : fm->bytes) {
+      char h[8];
+      std::snprintf(h, sizeof h, "0x%02X,", x);
+      bytes += h;
+    }
+    std::string text = fm->text;
+    for (char& ch : text)
+      if (ch == '"' || ch == '\\') ch = '\'';
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+                  "  {&ds1::gen::f_%08X, {%s}, %zu, %d, 0x%X, \"%s\", 0x%08X},\n", sva,
+                  bytes.c_str(), fm->bytes.size(), fm->base, fm->undef, text.c_str(),
+                  fm->example_va);
+    o += buf;
+  }
+  o += "};\nextern const int kIntFormCount = " + std::to_string(slots.size()) + ";\n";
+  FILE* fp = std::fopen(out.c_str(), "wb");
+  if (!fp) return 1;
+  std::fwrite(o.data(), 1, o.size(), fp);
+  std::fclose(fp);
+  std::printf("integer forms: %zu -> %s\n", slots.size(), out.c_str());
+  return 0;
+}
+
 }  // namespace lifter

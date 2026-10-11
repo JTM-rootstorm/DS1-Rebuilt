@@ -58,6 +58,20 @@ M4 findings:
   5 s (DS1_WATCHDOG_SECS). Open: a hard freeze in a new game when the
   hero drops the hoe (farmer warns of the Krug attack); models sometimes
   snap/fly off.
+- New-game freeze (fixed): the game installs uniprocessor lock functions
+  (plain inc/dec, 0x43EC99..) when it sees one CPU; we reported 1 while
+  running its threads in parallel, which corrupted its handle lists. We
+  report the host CPU count (2..8) now.
+- Crash in dxvk from the worker thread (0x656862) uploading textures
+  while the main thread rendered: the game sets DDSCL_MULTITHREADED, so
+  every ddraw.dll entry point now runs under one recursive lock, like
+  DirectDraw's own; the d3d9 device is created D3DCREATE_MULTITHREADED.
+- Instruction lifting verified: tests/lift_x87_test (111 x87 forms) and
+  tests/lift_int_test (13703 integer forms) run every form in the EXE
+  lifted and natively from random states, bit-exact (configure with
+  -DDS1_GAME_EXE=...). Open: animated models snap/fly off and the farmer
+  conversation never triggers; suspect cross-thread memory ordering in
+  lifted code (compiler reordering of guest loads/stores).
 - Automated runs: DS1_BACKGROUND ignores the desktop's real input;
   DS1_TEST_INPUT=<file> scripts input (goto/move/pointer/click/key);
   run.sh-style runs use their own XDG_DATA_HOME profile. Arguments after

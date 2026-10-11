@@ -100,7 +100,8 @@ class D3D9Device final : public Device {
       Check(d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
                                reinterpret_cast<HWND>(window_),
                                D3DCREATE_HARDWARE_VERTEXPROCESSING |
-                                   D3DCREATE_FPU_PRESERVE,
+                                   D3DCREATE_FPU_PRESERVE |
+                                   D3DCREATE_MULTITHREADED,
                                &pp, &dev_),
             "CreateDevice");
       D3DADAPTER_IDENTIFIER9 id{};

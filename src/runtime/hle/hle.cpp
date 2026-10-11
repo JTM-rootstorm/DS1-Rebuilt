@@ -31,6 +31,11 @@ std::map<std::pair<std::string, std::string>, Def>& Registry() {
 struct Slot {
   std::string dll, name;
   const Def* def;  // nullptr: unimplemented
+  // DirectDraw/Direct3D 7 entry points run under one process-wide lock,
+  // like DirectDraw with DDSCL_MULTITHREADED (which the game requests):
+  // its worker thread uploads textures while the main thread renders,
+  // and neither our ddraw state nor the d3d9 device is reentrant.
+  bool graphics() const { return dll == "ddraw.dll"; }
 };
 
 std::mutex g_slots_mu;
@@ -125,7 +130,11 @@ void CallThunk(Ctx& c, uint32_t thunk) {
   t_wd_hle_name = s->name.c_str();
   t_wd_hle_ret = Rd32(c.esp);
   ++t_hle_depth;
+  static std::recursive_mutex graphics_mu;
+  std::unique_lock<std::recursive_mutex> gl;
+  if (s->graphics()) gl = std::unique_lock<std::recursive_mutex>(graphics_mu);
   uint32_t r = d.fn(c);
+  if (gl) gl.unlock();
   --t_hle_depth;
   t_wd_hle_name = saved_name;
   t_wd_hle_ret = saved_ret;

@@ -42,3 +42,23 @@ if(TARGET ds1_x87 AND TARGET ds1_lift AND EXISTS "${DS1_GAME_EXE}" AND
   add_test(NAME lift_x87 COMMAND lift_x87_test)
   set_tests_properties(lift_x87 PROPERTIES TIMEOUT 600)
 endif()
+
+# lift_int_test: the same for every integer instruction form in the EXE.
+if(TARGET ds1_lift AND EXISTS "${DS1_GAME_EXE}" AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  set(_iforms "${CMAKE_CURRENT_BINARY_DIR}/lift_int_forms.cpp")
+  add_custom_command(OUTPUT "${_iforms}"
+    COMMAND ds1_lift --exe "${DS1_GAME_EXE}"
+            --symbols "${PROJECT_SOURCE_DIR}/symbols"
+            --manifest "${PROJECT_SOURCE_DIR}/lifter.manifest"
+            --int-test "${_iforms}"
+    DEPENDS ds1_lift "${PROJECT_SOURCE_DIR}/lifter.manifest"
+    COMMENT "Lifting the EXE's integer instruction forms for lift_int_test")
+  add_executable(lift_int_test lift_int_test.cpp "${_iforms}")
+  target_include_directories(lift_int_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(lift_int_test PRIVATE ds1_x87 ds1_image)
+  target_compile_options(lift_int_test PRIVATE -O1 -fno-strict-aliasing)
+  add_test(NAME lift_int COMMAND lift_int_test)
+  set_tests_properties(lift_int PROPERTIES TIMEOUT 900)
+endif()

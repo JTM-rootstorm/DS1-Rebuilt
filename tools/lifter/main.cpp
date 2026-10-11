@@ -3,6 +3,7 @@
 //   ds1_lift --exe <DungeonSiege.exe> --symbols symbols --out generated
 //            [--manifest lifter.manifest] [--insns-per-file N] [--dump VA]
 //            [--x87-test OUT.cpp]   (forms for tests/lift_x87_test.cpp)
+//            [--int-test OUT.cpp]   (forms for tests/lift_int_test.cpp)
 //
 // Pass 1 discovers functions to a fixpoint (Ghidra entries + exports +
 // every direct call/tail-call target found while descending). Pass 2
@@ -72,7 +73,7 @@ int main(int argc, char** argv) {
               manifest = "lifter.manifest";
   uint64_t per_file = 12000;
   uint32_t dump = 0;
-  std::string x87_test;
+  std::string x87_test, int_test;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto val = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -83,6 +84,7 @@ int main(int argc, char** argv) {
     else if (a == "--insns-per-file") per_file = std::stoull(val());
     else if (a == "--dump") dump = std::stoul(val(), nullptr, 16);
     else if (a == "--x87-test") x87_test = val();
+    else if (a == "--int-test") int_test = val();
     else {
       std::fprintf(stderr, "unknown argument %s\n", a.c_str());
       return 2;
@@ -107,6 +109,10 @@ int main(int argc, char** argv) {
   lifter::Decoder dec;
 
   // --x87-test OUT: lifted x87 forms for tests/lift_x87_test.cpp.
+  if (!int_test.empty()) {
+    std::string pro = kFilePrologue;
+    return lifter::WriteIntTest(p, dec, int_test, pro.c_str());
+  }
   if (!x87_test.empty()) {
     std::string pro = kFilePrologue;
     return lifter::WriteX87Test(p, dec, x87_test, pro.c_str());

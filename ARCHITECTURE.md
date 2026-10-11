@@ -237,6 +237,45 @@ on that state. What is known:
 All of it is written against POSIX + SDL3 + the RenderDevice, with
 platform specifics (mmap flags, paths, page size) in one place.
 
+### Distribution: users bring their own EXE
+The lifter is a permanent build stage, not scaffolding: the game logic
+in the port is its output, so it is re-run whenever its semantics, the
+manifest or the function list change. It never ships inside the binary.
+
+What can be published (this repo):
+- the lifter, its manifest (addresses, overrides, replacement list),
+  the runtime, the HLE layer, render backends, tools and docs.
+
+What is never published or committed:
+- DungeonSiege.exe, any DLL or data file from the game, generated/
+  (lifted C++ is derived from the EXE), symbols/ (exports, function
+  lists), the Ghidra project, memory dumps, extracted Tank contents.
+
+Build for anyone else, the same as for us:
+1. Own the game (GOG). Point the build at its DungeonSiege.exe.
+2. The build checks the EXE against the supported list below and stops
+   on a mismatch: every address in the manifest is specific to one build.
+3. The lifter runs locally and generates C++; clang compiles it with
+   the runtime into the native binary.
+4. At run time the binary reads Resources/, Maps/ and the rest from the
+   user's own install; it never needs the EXE again.
+
+Supported EXEs:
+
+| Build | Size | SHA-256 |
+|---|---|---|
+| GOG 1.11.1.1486 (msqa:03.07.0202), linked 2011-01-13 | 3821628 | 41f14b145e030f2decd95e9f434ccd1de0729ba13d1c5628c4bd9536ee938a02 |
+
+Retail CD 1.11 EXEs carry SafeDisc and are not supported. Other builds
+need their own manifest.
+
+Licence hygiene for what we publish:
+- dxvk (zlib), SDL3 (zlib), SoftFloat 3e (BSD-3), Zydis (MIT), D7VK
+  (zlib, reference) are fine to vendor or link. OpenAL Soft and ffmpeg
+  are LGPL: link dynamically.
+- Wine and Bochs are LGPL and used as references only: read them to
+  learn behaviour, do not copy code from them into this repo.
+
 ### Known macOS risk: memory ordering
 x86 is TSO; ARM64 is weakly ordered. Lifted code that shares data
 between threads without a lock would be correct on x86-64 hosts and

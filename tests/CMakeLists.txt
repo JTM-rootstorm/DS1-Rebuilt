@@ -9,6 +9,16 @@ if(TARGET ds1_x87 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
   set_tests_properties(x87 PROPERTIES TIMEOUT 300)
 endif()
 
+# x87_fast_test checks the model's integer fast path against its own
+# SoftFloat path; portable.
+if(TARGET ds1_x87)
+  add_executable(x87_fast_test x87_fast_test.cpp)
+  target_link_libraries(x87_fast_test PRIVATE ds1_x87)
+  target_compile_options(x87_fast_test PRIVATE -O2)
+  add_test(NAME x87_fast COMMAND x87_fast_test)
+  set_tests_properties(x87_fast PROPERTIES TIMEOUT 300)
+endif()
+
 # lift_semantics_test checks the integer/flag helpers in lifted.h against
 # the host CPU the same way.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

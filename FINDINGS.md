@@ -79,6 +79,16 @@ M4 findings:
   while the main thread rendered: the game sets DDSCL_MULTITHREADED, so
   every ddraw.dll entry point now runs under one recursive lock, like
   DirectDraw's own; the d3d9 device is created D3DCREATE_MULTITHREADED.
+- In-game frame time 22.5 -> 16.7 ms (60 fps): ~75% of the main thread
+  was the x87 model. Add/sub/mul/div of normal or zero operands now take
+  an integer fast path (exact 128-bit result rounded by RoundPack; no
+  host FPU), as do FST m32/m64 of values that stay normal; the rest still
+  goes through SoftFloat. The bigger half of the win was mechanical:
+  forced inlining of the arithmetic chain (F80s and result structs went
+  through memory between calls: store-forwarding stalls) and no stack
+  protector in ds1_x87. tests/x87_fast_test checks the fast paths against
+  SoftFloat (portable; 4M cases, mutation-checked); x87_test and lift_x87
+  still pass against the hardware.
 - Cursor glitches on mouse-over (fixed): the game draws a software
   cursor (0x656E02) only while GetForegroundWindow is its window: save
   the pixels under it, blend a 64x64 ARGB image, Blt back. The main

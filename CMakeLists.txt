@@ -47,7 +47,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/softfloat.cmake" AND
   target_link_libraries(ds1_x87 PRIVATE softfloat)
   # Every x87 instruction of the game runs through these: always optimise
   # (an -O0 debug build made float-heavy scenes several times slower).
-  target_compile_options(ds1_x87 PRIVATE -O2)
+  # No stack protector: its canary check sat in every hot x87 helper.
+  target_compile_options(ds1_x87 PRIVATE -O2 -fno-stack-protector)
   target_compile_options(softfloat PRIVATE -O2)
 endif()
 # ----------------------------------------------------------------------

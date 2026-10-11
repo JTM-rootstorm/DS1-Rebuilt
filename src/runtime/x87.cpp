@@ -33,6 +33,12 @@ extern "C" {
 
 namespace ds1::x87 {
 
+bool g_softfloat_only = false;
+
+// Hot helpers of the arithmetic path are forced inline: as calls they pass
+// F80s and small result structs through memory (store-forwarding stalls).
+#define X87_INLINE [[gnu::always_inline]] inline
+
 namespace {
 
 // --- status / control word bits -------------------------------------
@@ -265,7 +271,7 @@ void ShiftRightJam128(uint64_t& hi, uint64_t& lo, int n) {
 // way the x87 rounds into a register: full 15-bit exponent range, gradual
 // underflow with tininess detected after rounding, masked overflow
 // response. `exp` may lie outside the encodable range.
-Rounded RoundPack(bool sign, int32_t exp, uint64_t hi, uint64_t lo, int prec,
+X87_INLINE Rounded RoundPack(bool sign, int32_t exp, uint64_t hi, uint64_t lo, int prec,
                   int rc) {
   Rounded out{};
   const int drop = 64 - prec;
@@ -713,7 +719,7 @@ struct Result {
   uint16_t flags;
   bool up;
 };
-void Commit(State& s, int i, const Result& r) {
+X87_INLINE void Commit(State& s, int i, const Result& r) {
   Raise(s, r.flags);
   SetC1(s, r.up);
   Put(s, i, r.v);
@@ -735,10 +741,133 @@ extFloat80_t SfApply(MathOp op, extFloat80_t a, extFloat80_t b) {
 
 bool SameBits(F80 a, F80 b) { return a.sig == b.sig && a.se == b.se; }
 
+int PrecBits(const State& s) {
+  switch ((s.cw >> 8) & 3) {
+    case 0: return 24;
+    case 2: return 53;
+    default: return 64;
+  }
+}
+
+constexpr bool IsNormal(F80 v) {
+  return ExpOf(v) - 1u < 0x7FFEu && (v.sig & kJ);
+}
+constexpr bool IsNormalOrZero(F80 v) { return IsNormal(v) || (v.se & 0x7FFF) == 0 && !v.sig; }
+
+int Clz128(uint64_t hi, uint64_t lo) {
+  return hi ? std::countl_zero(hi) : 64 + std::countl_zero(lo);
+}
+
+// a op b for two normal finite operands, in integers: the exact result
+// (128 significand bits, the last one sticky) rounded by RoundPack. This
+// is the common case; SoftFloat (below) covers the rest and is the
+// reference the fast path is tested against (tests/x87_test.cpp).
+X87_INLINE Result FastArith(const State& s, MathOp op, F80 a, F80 b) {
+  const int rc = RcOf(s), prec = PrecBits(s);
+  int32_t ea = ExpOf(a), eb = ExpOf(b);
+  bool sa = SignOf(a), sb = SignOf(b);
+  bool sign;
+  int32_t exp;
+  uint64_t hi, lo;
+  if (IsZero(a) || IsZero(b)) {
+    switch (op) {
+      case MathOp::Mul:
+      case MathOp::Div:  // b is not zero (checked by the caller)
+        return {Zero(sa != sb), 0, false};
+      default: {
+        bool sbx = op == MathOp::Sub ? !sb : sb;
+        if (IsZero(a) && IsZero(b)) return {Zero(sa == sbx ? sa : rc == 1), 0, false};
+        // x + 0 is x rounded to the precision control.
+        F80 x = IsZero(a) ? b : a;
+        Rounded rr = RoundPack(IsZero(a) ? sbx : sa, ExpOf(x), x.sig, 0, prec, rc);
+        return {rr.v, rr.flags, rr.up};
+      }
+    }
+  }
+  switch (op) {
+    case MathOp::Mul: {
+      unsigned __int128 p = static_cast<unsigned __int128>(a.sig) * b.sig;
+      hi = uint64_t(p >> 64);
+      lo = uint64_t(p);
+      sign = sa != sb;
+      exp = ea + eb - 0x3FFF + 1;
+      if (!(hi & kJ)) {  // product in [2^126, 2^127)
+        hi = hi << 1 | lo >> 63;
+        lo <<= 1;
+        --exp;
+      }
+      break;
+    }
+    case MathOp::Div: {
+      // q = sig_a / sig_b * 2^64 (or 2^63), 128 quotient bits and a sticky
+      // remainder.
+      sign = sa != sb;
+      unsigned __int128 n;
+      if (a.sig >= b.sig) {
+        n = static_cast<unsigned __int128>(a.sig) << 63;
+        exp = ea - eb + 0x3FFF;
+      } else {
+        n = static_cast<unsigned __int128>(a.sig) << 64;
+        exp = ea - eb + 0x3FFF - 1;
+      }
+      hi = uint64_t(n / b.sig);
+      unsigned __int128 rem = n % b.sig;
+      unsigned __int128 n2 = rem << 64;
+      lo = uint64_t(n2 / b.sig);
+      if (n2 % b.sig) lo |= 1;
+      break;
+    }
+    default: {
+      bool sub = (op == MathOp::Sub) != (sa != sb);  // magnitudes subtract
+      bool sbx = op == MathOp::Sub ? !sb : sb;      // sign of the addend
+      // x = the larger magnitude.
+      bool swap = eb > ea || (eb == ea && b.sig > a.sig);
+      uint64_t xs = swap ? b.sig : a.sig, ys = swap ? a.sig : b.sig;
+      int32_t ex = swap ? eb : ea, ey = swap ? ea : eb;
+      sign = swap ? sbx : sa;
+      uint64_t yh = ys, yl = 0;
+      ShiftRightJam128(yh, yl, ex - ey);
+      exp = ex;
+      if (!sub) {
+        lo = yl;
+        hi = xs + yh;
+        if (hi < xs) {  // carry out: shift right one, keep the sticky
+          lo = lo >> 1 | (hi << 63) | (lo & 1);
+          hi = hi >> 1 | kJ;
+          ++exp;
+        }
+      } else {
+        lo = 0 - yl;
+        hi = xs - yh - (yl != 0);
+        if (!hi && !lo) {  // exact zero: +0, or -0 rounding down
+          return {Zero(rc == 1), 0, false};
+        }
+        // Cancellation by more than one bit only happens when the
+        // exponents differ by at most one, so no sticky bit was jammed.
+        int lz = Clz128(hi, lo);
+        if (lz >= 64) {
+          hi = lo << (lz - 64);
+          lo = 0;
+        } else if (lz) {
+          hi = hi << lz | lo >> (64 - lz);
+          lo <<= lz;
+        }
+        exp -= lz;
+      }
+      break;
+    }
+  }
+  Rounded rr = RoundPack(sign, exp, hi, lo, prec, rc);
+  return {rr.v, rr.flags, rr.up};
+}
+
 // a op b with x87 operand checks. `mem_denormal` marks a memory operand
 // that was a denormal before conversion (it raises DE like a register
 // one).
-Result Arith(const State& s, MathOp op, F80 a, F80 b, bool mem_denormal) {
+X87_INLINE Result Arith(const State& s, MathOp op, F80 a, F80 b, bool mem_denormal) {
+  if (!mem_denormal && IsNormalOrZero(a) && IsNormalOrZero(b) &&
+      !(op == MathOp::Div && IsZero(b)) && !g_softfloat_only)
+    return FastArith(s, op, a, b);
   Result r{};
   if (IsUnsupported(a) || IsUnsupported(b)) return {kIndefinite, kIE, false};
   if (IsNaN(a) || IsNaN(b)) {
@@ -784,7 +913,7 @@ Result Arith(const State& s, MathOp op, F80 a, F80 b, bool mem_denormal) {
 
 // Maps the instruction form onto the operation; dst is the register that
 // receives the result.
-Result DoOp(const State& s, Op op, F80 dst, F80 src, bool src_denormal) {
+X87_INLINE Result DoOp(const State& s, Op op, F80 dst, F80 src, bool src_denormal) {
   switch (op) {
     case Op::Add: return Arith(s, MathOp::Add, dst, src, src_denormal);
     case Op::Mul: return Arith(s, MathOp::Mul, dst, src, src_denormal);
@@ -1197,6 +1326,43 @@ void LoadConst(State& s, Const k) {
 
 // --- stores ----------------------------------------------------------
 
+// FST m32/m64 of zero or of a normal value that rounds to a normal one,
+// in integers: `mant` stored fraction bits, `bias`/`emax` of the format.
+// False sends the value through SoftFloat (overflow, underflow, specials).
+bool FastStore(State& s, F80 v, int mant, int bias, int emax, uint64_t* out) {
+  if (g_softfloat_only) return false;
+  bool sign = SignOf(v);
+  const int width = mant + 1 + (bias == 127 ? 8 : 11);
+  if (IsZero(v)) {
+    *out = uint64_t(sign) << (width - 1);
+    return true;
+  }
+  if (!IsNormal(v)) return false;
+  int32_t e = ExpOf(v) - 0x3FFF + bias;
+  if (e < 1 || e > emax) return false;
+  const int drop = 63 - mant;
+  uint64_t keep = v.sig >> drop, rest = v.sig & ((1ull << drop) - 1);
+  const uint64_t half = 1ull << (drop - 1);
+  bool inc;
+  switch (RcOf(s)) {
+    case 0: inc = rest > half || (rest == half && (keep & 1)); break;
+    case 1: inc = sign && rest; break;
+    case 2: inc = !sign && rest; break;
+    default: inc = false;
+  }
+  if (inc && ++keep == (2ull << mant)) {
+    keep >>= 1;
+    if (++e > emax) return false;  // overflow
+  }
+  *out = uint64_t(sign) << (width - 1) | uint64_t(e) << mant |
+         (keep & ((1ull << mant) - 1));
+  if (rest) {
+    Raise(s, kPE);
+    SetC1(s, inc);
+  }
+  return true;
+}
+
 uint32_t StoreF32(State& s) {
   Wait(s);
   SetC1(s, false);
@@ -1209,6 +1375,8 @@ uint32_t StoreF32(State& s) {
     Raise(s, kIE);
     return 0xFFC00000u;
   }
+  uint64_t fast;
+  if (FastStore(s, v, 23, 127, 254, &fast)) return uint32_t(fast);
   int rc = RcOf(s);
   extFloat80_t x = ToSf(Canonical(v));
   SfBegin(SfMode(rc), 80);
@@ -1236,6 +1404,8 @@ uint64_t StoreF64(State& s) {
     Raise(s, kIE);
     return 0xFFF8000000000000ull;
   }
+  uint64_t fast;
+  if (FastStore(s, v, 52, 1023, 2046, &fast)) return uint64_t(fast);
   int rc = RcOf(s);
   extFloat80_t x = ToSf(Canonical(v));
   SfBegin(SfMode(rc), 80);

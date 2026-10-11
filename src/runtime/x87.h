@@ -45,6 +45,10 @@ struct State {
   uint16_t fop;
 };
 
+// Test hook: add/sub/mul/div of normal operands take an integer fast
+// path; true sends them through SoftFloat, its reference.
+extern bool g_softfloat_only;
+
 enum class Op : uint8_t { Add, Mul, Sub, SubR, Div, DivR };
 // Sub: dst - src, SubR: src - dst, Div: dst / src, DivR: src / dst, where
 // dst is the register being written (Intel manual operand order).

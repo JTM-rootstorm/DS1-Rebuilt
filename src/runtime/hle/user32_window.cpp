@@ -340,6 +340,7 @@ void ActivateApp(uint32_t hwnd, bool active) {
       g_active = g_focus = 0;
     }
   }
+  WatchdogAppActive(active);
   Post(hwnd, WM_ACTIVATEAPP, active ? 1 : 0, 0);
   Post(hwnd, WM_ACTIVATE, active ? 1 : 0, 0);
   Post(hwnd, active ? WM_SETFOCUS : WM_KILLFOCUS, 0, 0);

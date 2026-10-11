@@ -133,8 +133,9 @@ int main(int argc, char** argv) {
   // Pass 1: discovery fixpoint. Besides call/tail-call targets, any code
   // address that appears as an immediate operand (function pointers stored
   // by code) or as a dword in initialised data (vtables, callback tables)
-  // becomes an entry. Extra entries are always safe in this model: code
-  // reached by a jump into an entry is just tail-called instead of inlined.
+  // becomes a weak entry (Program::weak): lifted on its own for indirect
+  // calls, but code running into it from elsewhere continues inline. A
+  // direct call or tail call makes it a strong entry.
   size_t initial = p.entries.size();
   std::deque<uint32_t> work(p.entries.begin(), p.entries.end());
   std::set<uint32_t> done;
@@ -144,6 +145,7 @@ int main(int argc, char** argv) {
     lifter::Insn in;
     if (!dec.Decode(p, t, &in)) return;
     p.entries.insert(t);
+    p.weak.insert(t);
     work.push_back(t);
     (*counter)++;
   };
@@ -159,8 +161,11 @@ int main(int argc, char** argv) {
     lifter::Function f;
     lifter::BuildFunction(p, dec, e, &f);
     for (const auto* s : {&f.direct_calls, &f.tail_calls})
-      for (uint32_t t : *s)
-        if (p.InText(t) && p.entries.insert(t).second) work.push_back(t);
+      for (uint32_t t : *s) {
+        if (!p.InText(t)) continue;
+        p.weak.erase(t);  // really entered as a function
+        if (p.entries.insert(t).second) work.push_back(t);
+      }
     for (const auto& [va, in] : f.insns) {
       if (!in.ok) continue;
       for (int i = 0; i < in.d.operand_count_visible; i++)
@@ -171,9 +176,9 @@ int main(int argc, char** argv) {
     }
   }
   std::printf("functions: %zu (%zu from Ghidra/exports, %zu discovered: "
-              "%zu via code pointers, %zu via data pointers)\n",
+              "%zu via code pointers, %zu via data pointers; %zu weak)\n",
               p.entries.size(), initial, p.entries.size() - initial,
-              from_code_ptrs, from_data_ptrs);
+              from_code_ptrs, from_data_ptrs, p.weak.size());
 
   // Pass 2: final CFGs and emission.
   std::filesystem::create_directories(outdir);

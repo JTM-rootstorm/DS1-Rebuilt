@@ -20,6 +20,17 @@ struct Program {
   uint32_t text_lo = 0, text_hi = 0;  // [lo, hi) of .text
 
   std::set<uint32_t> entries;                 // function entry points
+  // Entries known only from pointer scans (a dword in data or an
+  // immediate that happens to point into .text). They get their own
+  // lifted function for indirect calls, but do not split other functions:
+  // code running into one continues inline. Many are not function starts
+  // at all, and splitting a loop at one turned every iteration into a
+  // nested host call (a "freeze" that was really deepening recursion).
+  std::set<uint32_t> weak;
+
+  // True if control reaching t from another function leaves that function
+  // (a tail call) rather than continuing inline.
+  bool Splits(uint32_t t) const { return entries.count(t) && !weak.count(t); }
   std::map<uint32_t, std::string> names;      // demangled or Ghidra names
   std::set<uint32_t> noreturn;                // functions that never return
   std::map<uint32_t, std::vector<uint32_t>> jumptables;  // jmp va -> targets

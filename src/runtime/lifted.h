@@ -394,6 +394,16 @@ inline T* AtomicPtr(uint8_t* b, uint32_t a) {
   const uint32_t FS = c.fs_base;                                         \
   (void)FS;
 
+// Tail calls between lifted functions (all void(Ctx&)) are guaranteed
+// where the compiler supports it.
+#if defined(__clang__)
+#define LIFT_MUSTTAIL [[clang::musttail]]
+#elif defined(__GNUC__) && __GNUC__ >= 15
+#define LIFT_MUSTTAIL [[gnu::musttail]]
+#else
+#define LIFT_MUSTTAIL
+#endif
+
 #define LIFT_SPILL                                                       \
   c.eax = eax; c.ecx = ecx; c.edx = edx; c.ebx = ebx;                    \
   c.esp = esp; c.ebp = ebp; c.esi = esi; c.edi = edi; c.f = F;

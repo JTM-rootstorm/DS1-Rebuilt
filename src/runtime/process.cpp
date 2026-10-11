@@ -5,6 +5,8 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 
+#include <thread>
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -42,6 +44,11 @@ constexpr uint32_t kTlsArraySlots = 64;
 }  // namespace
 
 Thread* CurrentThread() { return t_current; }
+
+uint32_t GuestProcessorCount() {
+  unsigned n = std::thread::hardware_concurrency();
+  return std::clamp<unsigned>(n, 2, 8);
+}
 
 std::string GStr(uint32_t va) {
   if (!va) return {};
@@ -269,7 +276,7 @@ int RunProcess(const std::string& exe_path, const std::string& game_dir,
   // PEB: only the fields Win32 code commonly peeks at.
   p.mem.Commit(kPebVa, 0x1000, Prot::RW);
   Wr32(kPebVa + 0x08, p.img.image_base);
-  Wr32(kPebVa + 0x64, 1);      // NumberOfProcessors
+  Wr32(kPebVa + 0x64, GuestProcessorCount());  // NumberOfProcessors
   Wr32(kPebVa + 0xA4, 5);      // OSMajorVersion (Windows XP)
   Wr32(kPebVa + 0xA8, 1);      // OSMinorVersion
   Wr16(kPebVa + 0xAC, 2600);   // OSBuildNumber

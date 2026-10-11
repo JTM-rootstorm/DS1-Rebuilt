@@ -26,6 +26,7 @@
 #include "runtime/hle/kernel32_state.h"
 #include "runtime/hle/user32_window.h"
 #include "runtime/log.h"
+#include "runtime/watchdog.h"
 
 namespace ds1::ddraw {
 
@@ -68,6 +69,11 @@ void PresentFrame() {
     }
   }
   g->Present();
+  // Loading screens present without pumping messages; keep answering the
+  // window system (compositor pings) so the window does not look hung.
+  // Events are only queued for the game, as Windows would.
+  PumpHostEvents();
+  WatchdogFrame();
   // DS1_HITCH=ms: report frames that took longer than that.
   static const double hitch_ms = [] {
     const char* e = std::getenv("DS1_HITCH");

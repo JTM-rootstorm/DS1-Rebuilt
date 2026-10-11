@@ -6,6 +6,16 @@
 namespace lifter {
 
 namespace {
+// Set while emitting a function whose body is wrapped in try/catch (SEH
+// frames): a guaranteed tail call cannot leave a try block.
+thread_local bool t_in_seh = false;
+// Tail calls between lifted functions must not grow the host stack (a
+// loop that crosses function entries would otherwise recurse per
+// iteration).
+const char* TailAttr() { return t_in_seh ? "" : "LIFT_MUSTTAIL "; }
+}  // namespace
+
+namespace {
 
 std::string Fmt(const char* f, ...) {
   char buf[512];
@@ -267,10 +277,10 @@ class InsnEmitter {
   // ---- control flow -------------------------------------------------------
   std::string TailCall(uint32_t t) {
     refs_.insert(t);
-    return Fmt("{ LIFT_SPILL; %s(c); return; }", FnName(t).c_str());
+    return Fmt("{ LIFT_SPILL; %sreturn %s(c); }", TailAttr(), FnName(t).c_str());
   }
   std::string GotoOrTail(uint32_t t) {
-    if (t != f_.entry && p_.entries.count(t)) return TailCall(t);
+    if (t != f_.entry && p_.Splits(t)) return TailCall(t);
     if (!f_.insns.count(t))  // target outside .text: never decoded
       return Fmt("{ LIFT_SPILL; ::ds1::BadJump(c, %s, %s); }",
                  Hex(in_.va).c_str(), Hex(t).c_str());
@@ -1039,6 +1049,7 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
         o0.mem.index == ZYDIS_REGISTER_NONE && o0.mem.disp.value == 0)
       seh = true;
   }
+  t_in_seh = seh;
   if (seh) o += "  try {\n";
   // Instructions are emitted in address order, so if the function also
   // reaches code below its entry (shared tails, e.g. strstr jumping into
@@ -1081,9 +1092,10 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
     if (fl == Flow::Fall || fl == Flow::Branch) {
       uint32_t nx = in.next();
       auto ni = std::next(it);
-      if (nx != f.entry && p_.entries.count(nx)) {
+      if (nx != f.entry && p_.Splits(nx)) {
         refs->insert(nx);
-        o += Fmt("  LIFT_SPILL; %s(c); return;\n", FnName(nx).c_str());
+        o += Fmt("  { LIFT_SPILL; %sreturn %s(c); }\n", TailAttr(),
+                 FnName(nx).c_str());
       } else if (ni == f.insns.end() || ni->first != nx) {
         o += f.insns.count(nx)
                  ? Fmt("  goto L_%08X;\n", nx)

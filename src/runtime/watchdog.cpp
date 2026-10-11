@@ -44,6 +44,8 @@ struct HostThread {
 std::mutex g_mu;
 std::vector<HostThread> g_threads;
 std::atomic<int64_t> g_beat{0};  // steady-clock ms of the last heartbeat
+std::atomic<int64_t> g_frame{0};  // ... and of the last presented frame
+std::atomic<bool> g_active{true};  // the game presents only while active
 std::atomic<int> g_dump_fd{-1};
 std::atomic<bool> g_dump_done{false};
 
@@ -73,8 +75,8 @@ void OnDumpSignal(int) {
                     n, t_wd_hle_ret);
       WriteAll(fd, buf);
     }
-    void* frames[128];
-    int n = backtrace(frames, 128);
+    void* frames[512];
+    int n = backtrace(frames, 512);
     backtrace_symbols_fd(frames, n, fd);
   }
   g_dump_done.store(true);
@@ -97,14 +99,12 @@ std::string DumpPath() {
   return dir + name;
 }
 
-void Dump(double stalled) {
+void Dump(const char* what, double stalled) {
   std::string path = DumpPath();
   int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
   if (fd < 0) return;
   char buf[256];
-  std::snprintf(buf, sizeof buf,
-                "ds1 hang dump: main thread has not pumped events for %.1f s\n",
-                stalled);
+  std::snprintf(buf, sizeof buf, "ds1 hang dump: %s for %.1f s\n", what, stalled);
   WriteAll(fd, buf);
   std::vector<HostThread> threads;
   {
@@ -128,26 +128,37 @@ void Dump(double stalled) {
   g_dump_fd.store(-1);
   close(fd);
   std::fprintf(stderr,
-               "warning: watchdog: main thread stalled for %.1f s; stacks of "
-               "all guest threads written to %s\n",
-               stalled, path.c_str());
+               "warning: watchdog: %s for %.1f s; stacks of all guest threads "
+               "written to %s\n",
+               what, stalled, path.c_str());
 }
 
 void WatchdogMain() {
-  bool dumped = false;
+  int dumps = 0;
+  int64_t last_dump = 0;
   for (;;) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    int64_t beat = g_beat.load();
-    if (!beat) continue;  // the main thread has not pumped yet
-    double stalled = (NowMs() - beat) / 1000.0;
-    if (StallSeconds() <= 0 || stalled < StallSeconds()) {
-      dumped = false;
+    int64_t beat = g_beat.load(), frame = g_frame.load(), now = NowMs();
+    if (!beat || !frame) continue;  // not up yet
+    // Either the main thread stopped servicing the window system, or it
+    // still does (e.g. in MsgWaitForMultipleObjects) but no frame has
+    // been presented: a game-level deadlock behind a responsive window.
+    double no_pump = (now - beat) / 1000.0, no_frame = (now - frame) / 1000.0;
+    if (!g_active.load()) no_frame = 0;
+    double limit = StallSeconds();
+    if (limit <= 0 || (no_pump < limit && no_frame < limit)) {
+      dumps = 0;
       continue;
     }
-    if (!dumped) {
-      dumped = true;
-      Dump(stalled);
-    }
+    // While it stays stuck, dump again every 15 s (up to 4 times) to tell
+    // a wedged thread from one that is busy going nowhere.
+    if (dumps >= 4 || (dumps && now - last_dump < 15000)) continue;
+    dumps++;
+    last_dump = now;
+    if (no_pump >= limit)
+      Dump("main thread has not pumped window events", no_pump);
+    else
+      Dump("no frame presented (window events still pumped)", no_frame);
   }
 }
 
@@ -172,5 +183,10 @@ void RegisterGuestHostThread(const char* name, unsigned tid) {
 }
 
 void WatchdogHeartbeat() { g_beat.store(NowMs()); }
+void WatchdogFrame() { g_frame.store(NowMs()); }
+void WatchdogAppActive(bool active) {
+  g_active.store(active);
+  g_frame.store(NowMs());
+}
 
 }  // namespace ds1

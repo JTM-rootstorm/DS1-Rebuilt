@@ -273,8 +273,9 @@ HLE("kernel32.dll", GetSystemInfo, 1) {
   Wr32(si + 4, 0x1000);       // page size
   Wr32(si + 8, 0x00010000);   // lowest application address
   Wr32(si + 12, 0x7FFEFFFF);  // highest
-  Wr32(si + 16, 1);           // active processor mask
-  Wr32(si + 20, 1);           // number of processors
+  uint32_t ncpu = GuestProcessorCount();
+  Wr32(si + 16, (1u << ncpu) - 1);  // active processor mask
+  Wr32(si + 20, ncpu);              // number of processors
   Wr32(si + 24, 586);         // PROCESSOR_INTEL_PENTIUM
   Wr32(si + 28, 0x10000);     // allocation granularity
   Wr16(si + 32, 6);           // level

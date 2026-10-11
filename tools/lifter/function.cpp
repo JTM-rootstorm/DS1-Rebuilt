@@ -54,9 +54,10 @@ bool IsJcc(ZydisMnemonic m) {
   }
 }
 
-// A direct branch target that is another function's entry is a tail call.
+// A direct branch target that is another (strong) function entry is a
+// tail call; see Program::weak.
 bool IsOtherEntry(const Program& p, const Function& f, uint32_t t) {
-  return t != f.entry && p.entries.count(t);
+  return t != f.entry && p.Splits(t);
 }
 
 }  // namespace

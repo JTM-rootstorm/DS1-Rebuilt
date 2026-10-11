@@ -14,6 +14,13 @@
 
 namespace ds1 {
 
+// Processors reported to the game (PEB, GetSystemInfo). Guest threads run
+// truly in parallel on the host, so this must never say 1: with one CPU
+// the game installs lock functions built on plain inc/dec (atomic only on
+// a uniprocessor), which raced and corrupted its handle lists (hang at the
+// end of the opening cinematic). Capped: 2002 code may assume few CPUs.
+uint32_t GuestProcessorCount();
+
 // Fixed guest layout (see ARCHITECTURE.md). TEBs grow down from kTebTop.
 inline constexpr uint32_t kPebVa = 0x7FFDF000;
 inline constexpr uint32_t kTebTop = 0x7FFDE000;

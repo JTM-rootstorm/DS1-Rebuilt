@@ -52,6 +52,22 @@ The arena is not emulation: it is how the program's address space is
 represented. A guest load is one add of a base register plus the load
 itself, on both x86-64 and ARM64.
 
+Host libraries (SDL3, dxvk/SDL_GPU, OpenAL, libc) are ordinary 64-bit
+libraries and never see guest addresses. The HLE layer is the only
+place where the two worlds meet:
+- Guest -> host: a guest pointer argument becomes `base + addr`
+  (e.g. CreateFileA's path, a vertex array passed to DrawPrimitive).
+  Little-endian on both sides, so data is used in place, no copies.
+  Structs that contain pointers are read through guest-layout mirror
+  types whose pointer fields are `u32`.
+- Host -> guest: host objects are never exposed as 64-bit pointers.
+  Kernel objects (files, events, threads) become 32-bit handles indexing
+  a host table. COM objects (IDirectDraw7, IDirect3DDevice7, ...) are
+  small guest-memory objects whose vtables point at thunk addresses and
+  whose payload holds a host table index. Memory the game must read or
+  write (Lock() results, MapViewOfFile views, heap blocks) is placed
+  inside the arena.
+
 ## Decisions
 
 ### Guest arena
@@ -66,6 +82,31 @@ granularity, page protections, VirtualQuery) are tracked in a per-guest-
 page table. Host protection is only "accessible or not" at host page
 granularity (4 KiB on x86 Linux, 16 KiB on Apple Silicon and Asahi), so
 nothing depends on host page faults for guest behaviour.
+
+### Address-space headroom: 2 GiB -> ~4 GiB (planned, opt-in)
+The EXE is not large-address-aware, so on Windows it never saw an
+address at or above 0x80000000, and its code may rely on that. Until
+audited, the guest allocator hands out only addresses below 0x80000000
+(the thunk region at 0x7F000000 stays there either way). Then:
+1. Audit for code that breaks with high addresses: signed compares or
+   sign-extending shifts on pointers (`cmp ptr; jl/jg`, `sar`, `cdq`
+   on addresses), "negative means error" checks on pointer-or-error
+   returns, top-bit tagging of pointers, pointer differences stored in
+   signed ints, and address-to-int conversions in hashing/sorting.
+   Ghidra pointer typing plus a lifter pass that flags signed
+   conditions on values derived from allocator results narrows this
+   down.
+2. Add a top-down allocation stress mode (like Windows'
+   AllocationPreference=MEM_TOP_DOWN test for LAA apps): every
+   VirtualAlloc/heap/MapViewOfFile result is placed as high as possible,
+   so bugs show up at startup instead of hours into a session.
+3. Fix what the audit finds with manifest overrides or host
+   replacements, then allow allocations up to 0xFFFE0000 (the top 64 KiB
+   stays reserved, as on Windows) behind a config flag. It becomes the
+   default only after a full playthrough in stress mode.
+Worth it for big mods and long sessions; the game itself uses a few
+hundred MB, and Tank archives are mapped views, so this is headroom,
+not a bring-up requirement.
 
 ### Lifter: x86-32 -> portable C++
 No maintained tool lifts Win32 x86 PE to portable C. The code is VC6:
@@ -216,5 +257,6 @@ the manifest. Revisit before the macOS port.
   Main menu renders.
 - M4: Miles audio, Bink, remaining HLE. Single-player playable on Linux.
 - M5: SDL_GPU backend (Vulkan) with the fixed-function generator,
-  matched against the d3d9 backend.
+  matched against the d3d9 backend. Large-address audit and top-down
+  stress mode; ~4 GiB guest address space behind a flag.
 - M6: macOS arm64 build: Metal via SDL_GPU, memory-ordering audit.

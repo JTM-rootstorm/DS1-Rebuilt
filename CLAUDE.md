@@ -41,8 +41,10 @@ ARCHITECTURE.md.
 - dxvk-native throws in Direct3DCreate9 unless DXVK_WSI_DRIVER is set.
   Host code sets `setenv("DXVK_WSI_DRIVER", "SDL3", 0)` before any D3D9
   call; keep it that way.
-- Guest addresses must stay below 0x80000000: the EXE is not
-  large-address-aware and may compare pointers as signed.
+- Guest addresses must stay below 0x80000000 (the EXE is not
+  large-address-aware and may compare pointers as signed) until the
+  large-address audit in ARCHITECTURE.md is done; even then only behind
+  its config flag.
 - The guest arena base is chosen at startup (preferred 0x1000000000) and
   is not a compile-time constant. Do not hand host pointers to guest
   code; convert with GuestMemory::to_guest.

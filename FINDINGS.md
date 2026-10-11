@@ -41,6 +41,27 @@ M4 findings:
   keeps the display-mode size (MoveWindow/minimize are bookkeeping) and
   mouse coordinates are scaled window -> mode. DS1_TEST_FOCUS=lost,gained
   (seconds) injects focus loss/regain for automated runs.
+- Cursor: the game re-centres the pointer every frame (SetCursorPos to the
+  screen centre) and moves its own cursor by trunc((pos - centre) *
+  sensitivity) (FUN_00414642; peek reads only touch locals). Warping the
+  host pointer for that trapped it in the window. Windowed mode, where
+  the game uses absolute positions, is disabled in this build (the store
+  of the `fullscreen` setting at 0x41653A is NOPed). Now: SetCursorPos
+  never warps; while the host pointer is over the window, GetCursorPos
+  reads the game's cursor from its AppModule (GWL_USERDATA: cursor at
+  +0x12C/+0x130, sensitivity +0x17C/+0x180) and returns the position that
+  lands it exactly under the pointer; outside, the cursor stays put.
+  Limitation: drag-rotate stops at the window edge (no pointer lock).
+- Hangs: a watchdog dumps every guest thread's host backtrace (lifted
+  function names) and the import each is inside to
+  $XDG_DATA_HOME/ds1/hangs/ when the main thread stops pumping events for
+  5 s (DS1_WATCHDOG_SECS). Open: a hard freeze in a new game when the
+  hero drops the hoe (farmer warns of the Krug attack); models sometimes
+  snap/fly off.
+- Automated runs: DS1_BACKGROUND ignores the desktop's real input;
+  DS1_TEST_INPUT=<file> scripts input (goto/move/pointer/click/key);
+  run.sh-style runs use their own XDG_DATA_HOME profile. Arguments after
+  `--` go on the game's command line.
 - Performance: the debug preset built the x87 model and SoftFloat at -O0;
   the menu intro animation (x87-heavy) ran at 135-145 ms/frame. They are
   -O2 in every preset now (also the mixer and pixel formats). The game

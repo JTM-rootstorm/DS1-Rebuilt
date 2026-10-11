@@ -73,6 +73,7 @@ if(DS1_GENERATED AND TARGET ds1_x87)
     src/main.cpp
     src/runtime/dispatch.cpp
     src/runtime/process.cpp
+    src/runtime/watchdog.cpp
     src/runtime/guest_alloc.cpp
     src/runtime/hle/hle.cpp
     src/runtime/hle/kernel32.cpp

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "runtime/log.h"
+#include "runtime/watchdog.h"
 
 namespace ds1::hle {
 
@@ -112,9 +113,16 @@ void CallThunk(Ctx& c, uint32_t thunk) {
     TraceF("[%04X] %s!%s(%s) from %08X\n", CurrentThread()->tid,
            s->dll.c_str(), s->name.c_str(), args.c_str(), Rd32(c.esp));
   }
+  // For hang dumps: which import this thread is inside (innermost).
+  const char* saved_name = t_wd_hle_name;
+  uint32_t saved_ret = t_wd_hle_ret;
+  t_wd_hle_name = s->name.c_str();
+  t_wd_hle_ret = Rd32(c.esp);
   ++t_hle_depth;
   uint32_t r = d.fn(c);
   --t_hle_depth;
+  t_wd_hle_name = saved_name;
+  t_wd_hle_ret = saved_ret;
   if (g_trace) TraceF("[%04X]   -> %X\n", CurrentThread()->tid, r);
   c.eax = r;
   c.esp += 4 + (d.nargs > 0 ? 4 * uint32_t(d.nargs) : 0);

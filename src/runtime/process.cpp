@@ -16,6 +16,7 @@
 #include "runtime/lifted.h"
 #include "runtime/log.h"
 #include "runtime/runtime.h"
+#include "runtime/watchdog.h"
 
 namespace ds1 {
 
@@ -151,6 +152,7 @@ static void* HostThreadMain(void* arg) {
   auto* s = static_cast<HostThreadStart*>(arg);
   t_current = s->t;
   InstallSignalStack();
+  RegisterGuestHostThread("guest", s->t->tid);
   Ctx& c = s->t->ctx;
   uint32_t r = 0;
   try {
@@ -202,6 +204,7 @@ static void* ServiceThreadMain(void* arg) {
   std::unique_ptr<ServiceStart> s(static_cast<ServiceStart*>(arg));
   t_current = s->t;
   InstallSignalStack();
+  RegisterGuestHostThread("service", s->t->tid);
   hle::t_hle_depth = 1;
   s->fn();
   return nullptr;
@@ -246,11 +249,14 @@ static uint32_t RunOnMainThread(Thread* t, uint32_t entry) {
   return r;
 }
 
-int RunProcess(const std::string& exe_path, const std::string& game_dir) {
+int RunProcess(const std::string& exe_path, const std::string& game_dir,
+               const std::string& game_args) {
   g_proc = new Process;
   Process& p = *g_proc;
   p.game_dir = game_dir;
+  p.game_args = game_args;
   p.guest_dir = kGuestGameDir;
+  StartWatchdog();
   if (!p.mem.Reserve()) FatalF("cannot reserve the guest arena");
   g_guest_base = p.mem.base();
   std::string err;

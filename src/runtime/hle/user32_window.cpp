@@ -8,6 +8,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <atomic>
+#include <bit>
+#include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -25,8 +28,15 @@
 #include "runtime/hle/user32_window.h"
 #include "runtime/hle/win32.h"
 #include "runtime/log.h"
+#include "runtime/watchdog.h"
 
 namespace ds1 {
+
+bool Background();
+
+// SDL_MouseID of DS1_TEST_INPUT "pointer" events: they stand for the host
+// pointer, which automated (background) runs otherwise ignore.
+constexpr SDL_MouseID kTestPointer = 0xD51D51;
 
 namespace {
 
@@ -99,6 +109,14 @@ uint16_t g_next_atom = 0xC100;
 uint32_t g_focus = 0, g_active = 0;
 int g_cursor_count = 0;  // ShowCursor display counter
 int32_t g_mouse_x = 0, g_mouse_y = 0;  // screen coordinates
+// The host pointer over the game window, in client (mode) coordinates;
+// valid while g_pointer_inside. Written on the main thread.
+std::atomic<bool> g_pointer_inside{false};
+std::atomic<int32_t> g_real_x{0}, g_real_y{0};
+// When the game last re-centred the cursor (it does so every frame while
+// it steers its own pointer by relative motion).
+std::atomic<int64_t> g_last_recentre_ms{-100000};
+std::atomic<int32_t> g_recentre_x{0}, g_recentre_y{0};  // screen coordinates
 bool g_sdl_up = false;
 std::thread::id g_main_thread_id = std::this_thread::get_id();
 
@@ -280,6 +298,16 @@ void WindowOrigin(uint32_t hwnd, int* x, int* y) {
   }
 }
 
+// True (with the mode size) while hwnd is in DirectDraw exclusive mode.
+bool ExclusiveSize(uint32_t hwnd, int* w, int* h) {
+  std::lock_guard<std::recursive_mutex> l(g_mu);
+  Window* win = Win(hwnd);
+  if (!win || !win->mode_w) return false;
+  *w = win->mode_w;
+  *h = win->mode_h;
+  return true;
+}
+
 // SDL window coordinates -> client coordinates. In exclusive mode the
 // client area is the display mode, whatever size the host window really
 // has (resized by the user, or by desktop scaling), so scale.
@@ -370,20 +398,43 @@ void HandleSdlEvent(const SDL_Event& e) {
       WindowOrigin(h, &ox, &oy);
       float kx, ky;
       ModeScale(h, &kx, &ky);
-      int x = int(e.motion.x * kx), y = int(e.motion.y * ky);
-      g_mouse_x = ox + x;
-      g_mouse_y = oy + y;
-      Post(h, WM_MOUSEMOVE, MouseKeys(), MkLparam(x, y));
+      int mw, mh;
+      if (!Background() || e.motion.which == kTestPointer) {
+        g_real_x = int(e.motion.x * kx);
+        g_real_y = int(e.motion.y * ky);
+        g_pointer_inside = true;
+      }
+      if (ExclusiveSize(h, &mw, &mh)) {
+        // Virtual cursor: the game recentres it with SetCursorPos every
+        // frame and steers its own pointer by the difference, as on a
+        // fullscreen Windows desktop. Real motion moves the virtual
+        // position; the host pointer is never warped or confined.
+        static float fx = 0, fy = 0;  // sub-pixel remainder
+        fx += e.motion.xrel * kx;
+        fy += e.motion.yrel * ky;
+        int dx = int(fx), dy = int(fy);
+        fx -= dx;
+        fy -= dy;
+        g_mouse_x = std::clamp(g_mouse_x + dx, ox, ox + mw - 1);
+        g_mouse_y = std::clamp(g_mouse_y + dy, oy, oy + mh - 1);
+      } else {
+        g_mouse_x = ox + int(e.motion.x * kx);
+        g_mouse_y = oy + int(e.motion.y * ky);
+      }
+      Post(h, WM_MOUSEMOVE, MouseKeys(), MkLparam(g_mouse_x - ox, g_mouse_y - oy));
       break;
     }
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+      g_pointer_inside = false;
+      break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP: {
       uint32_t h = HwndForSdl(e.button.windowID);
       if (!h) break;
       bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-      float kx, ky;
-      ModeScale(h, &kx, &ky);
-      int x = int(e.button.x * kx), y = int(e.button.y * ky);
+      int ox, oy;
+      WindowOrigin(h, &ox, &oy);
+      int x = g_mouse_x - ox, y = g_mouse_y - oy;  // where motion left it
       uint32_t base;
       uint8_t vk;
       switch (e.button.button) {
@@ -514,11 +565,179 @@ void InjectTestFocus() {
   stage++;
 }
 
+// Test hook: DS1_TEST_INPUT=<file> replays scripted input, one command
+// per line, times in seconds since the first event pump:
+//   <t> goto <x> <y>      move the game's cursor to client (x, y): it is
+//                         driven by relative motion, so this homes it to
+//                         the top-left corner first, over a few frames
+//   <t> move <dx> <dy>    relative motion
+//   <t> pointer <x> <y>   the host pointer is at client (x, y) (the
+//                         game's cursor should follow it exactly)
+//   <t> click [left|right]
+//   <t> key <SDL scancode name>   e.g. Escape, Return, Space, A
+// '#' starts a comment.
+struct TestEvent {
+  double t;
+  SDL_Event e;
+};
+
+void InjectTestInput() {
+  static std::vector<TestEvent> q;
+  static size_t next = 0;
+  static Uint64 t0 = 0;
+  static bool loaded = false;
+  if (!loaded) {
+    loaded = true;
+    t0 = SDL_GetTicks();
+    const char* path = std::getenv("DS1_TEST_INPUT");
+    if (!path) return;
+    FILE* f = std::fopen(path, "r");
+    if (!f) {
+      WarnF("DS1_TEST_INPUT: cannot open %s\n", path);
+      return;
+    }
+    char line[256];
+    auto motion = [](double t, float dx, float dy) {
+      SDL_Event e{};
+      e.type = SDL_EVENT_MOUSE_MOTION;
+      e.motion.xrel = dx;
+      e.motion.yrel = dy;
+      return TestEvent{t, e};
+    };
+    while (std::fgets(line, sizeof line, f)) {
+      if (char* h = std::strchr(line, '#')) *h = 0;
+      double t;
+      char cmd[32] = {}, a[64] = {}, b[64] = {};
+      int n = std::sscanf(line, "%lf %31s %63s %63s", &t, cmd, a, b);
+      if (n < 2) continue;
+      std::string c = cmd;
+      if (c == "goto" && n == 4) {
+        // Home: two big moves (the virtual cursor clamps at the edge and
+        // the game re-centres it every frame), then steps of <= 200 px.
+        q.push_back(motion(t, -4000, -4000));
+        q.push_back(motion(t + 0.1, -4000, -4000));
+        q.push_back(motion(t + 0.2, -4000, -4000));
+        float x = std::atof(a), y = std::atof(b);
+        double tt = t + 0.3;
+        while (x > 0 || y > 0) {
+          float sx = std::min(x, 200.0f), sy = std::min(y, 200.0f);
+          q.push_back(motion(tt, sx, sy));
+          x -= sx;
+          y -= sy;
+          tt += 0.1;
+        }
+      } else if (c == "pointer" && n == 4) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.which = kTestPointer;
+        e.motion.x = std::atof(a);
+        e.motion.y = std::atof(b);
+        q.push_back({t, e});
+      } else if (c == "move" && n == 4) {
+        q.push_back(motion(t, std::atof(a), std::atof(b)));
+      } else if (c == "click") {
+        bool right = n >= 3 && std::string(a) == "right";
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        e.button.button = right ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
+        e.button.down = true;
+        e.button.clicks = 1;
+        q.push_back({t, e});
+        e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.down = false;
+        q.push_back({t + 0.08, e});
+      } else if (c == "key" && n >= 3) {
+        SDL_Scancode sc = SDL_GetScancodeFromName(a);
+        if (sc == SDL_SCANCODE_UNKNOWN) {
+          WarnF("DS1_TEST_INPUT: unknown key %s\n", a);
+          continue;
+        }
+        SDL_Event e{};
+        e.type = SDL_EVENT_KEY_DOWN;
+        e.key.scancode = sc;
+        e.key.key = SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false);
+        e.key.down = true;
+        q.push_back({t, e});
+        e.type = SDL_EVENT_KEY_UP;
+        e.key.down = false;
+        q.push_back({t + 0.08, e});
+      } else {
+        WarnF("DS1_TEST_INPUT: bad line: %s", line);
+      }
+    }
+    std::fclose(f);
+    std::stable_sort(q.begin(), q.end(),
+                     [](const TestEvent& x, const TestEvent& y) { return x.t < y.t; });
+    WarnF("DS1_TEST_INPUT: %zu events from %s\n", q.size(), path);
+  }
+  if (next >= q.size()) return;
+  double t = (SDL_GetTicks() - t0) / 1000.0;
+  SDL_WindowID id = 0;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    for (auto& [h, w] : g_windows)
+      if (w.sdl && !w.destroyed) id = SDL_GetWindowID(w.sdl);
+  }
+  if (!id) return;
+  // At most one motion per pump, so each lands in its own game frame.
+  bool moved = false;
+  while (next < q.size() && q[next].t <= t) {
+    SDL_Event e = q[next].e;
+    if (e.type == SDL_EVENT_MOUSE_MOTION) {
+      if (moved) break;
+      moved = true;
+      e.motion.windowID = id;
+    } else if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) {
+      e.key.windowID = id;
+    } else {
+      e.button.windowID = id;
+    }
+    HandleSdlEvent(e);
+    next++;
+  }
+}
+
+// Test hook: DS1_TEST_STALL="at,seconds" blocks the main thread once, to
+// exercise the hang watchdog.
+void InjectTestStall() {
+  static double at = -1, dur = 0;
+  static bool done = false;
+  static Uint64 t0 = SDL_GetTicks();
+  if (done) return;
+  if (at < 0) {
+    const char* env = std::getenv("DS1_TEST_STALL");
+    if (!env || std::sscanf(env, "%lf,%lf", &at, &dur) != 2) {
+      done = true;
+      return;
+    }
+  }
+  if ((SDL_GetTicks() - t0) / 1000.0 < at) return;
+  done = true;
+  WarnF("DS1_TEST_STALL: blocking the main thread for %.1f s\n", dur);
+  std::this_thread::sleep_for(std::chrono::duration<double>(dur));
+}
+
 void PumpHostEvents() {
   if (!g_sdl_up || !OnMainThread()) return;
+  InjectTestStall();
   SDL_Event e;
-  while (SDL_PollEvent(&e)) HandleSdlEvent(e);
+  while (SDL_PollEvent(&e)) {
+    // Automated runs take input only from DS1_TEST_INPUT: their windows
+    // are on someone's desktop and stray clicks must not drive them.
+    if (Background() && (e.type == SDL_EVENT_MOUSE_MOTION ||
+                         e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                         e.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                         e.type == SDL_EVENT_MOUSE_WHEEL ||
+                         e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP ||
+                         e.type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
+                         e.type == SDL_EVENT_WINDOW_FOCUS_LOST ||
+                         e.type == SDL_EVENT_WINDOW_MOUSE_LEAVE))
+      continue;
+    HandleSdlEvent(e);
+  }
   InjectTestFocus();
+  InjectTestInput();
+  WatchdogHeartbeat();
 }
 
 SDL_Window* SdlWindowFor(uint32_t hwnd) {
@@ -1246,32 +1465,72 @@ HLE("user32.dll", ShowCursor, 1) {
   return uint32_t(g_cursor_count);
 }
 
+// Dungeon Siege's input code (FUN_00414642) has two modes. Windowed, its
+// cursor is the pointer position. Fullscreen (the only mode this build
+// allows: the `fullscreen` setting's store is NOPed out at 0x41653A) it
+// re-centres the pointer every frame and moves its own cursor by
+//   trunc((pos - ref) * sensitivity), clamped to the screen,
+// where ref is the last position it read or set. The update that moves
+// the game's cursor first re-centres (ref = centre, SetCursorPos(centre))
+// and then reads; other reads only peek into locals. Over a desktop window
+// that drifts from the host pointer, so while the pointer is over the
+// window we read the game's cursor and return the position that lands it
+// exactly under the pointer. The fields are in the game's AppModule,
+// which it keeps in the window's GWL_USERDATA:
+//   +0x12C/+0x130 cursor (client px),
+//   +0x17C/+0x180 sensitivity (+0x188/+0x18C when flags +0x48 bit 28),
+//   +0x74 fullscreen flag (the scale applies when set or with bit 28).
+bool SyncedCursorPos(int32_t* sx, int32_t* sy) {
+  if (!g_pointer_inside) return false;
+  // Only while the game is re-centring (otherwise it reads absolute
+  // positions and the plain pointer position is right).
+  auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now().time_since_epoch())
+                 .count();
+  if (now - g_last_recentre_ms > 250) return false;
+  uint32_t app = 0;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    for (auto& [h, w] : g_windows)
+      if (w.mode_w && !w.destroyed) app = w.userdata;
+  }
+  if (!app || !g_proc->mem.IsCommitted(app) || !g_proc->mem.IsCommitted(app + 0x190))
+    return false;
+  int32_t gx = int32_t(Rd32(app + 0x12C)), gy = int32_t(Rd32(app + 0x130));
+  uint32_t flags = Rd32(app + 0x48);
+  bool alt = flags >> 28 & 1;
+  float kx = 1, ky = 1;
+  if (GPtr(app + 0x74)[0] || alt) {
+    kx = std::bit_cast<float>(Rd32(app + (alt ? 0x188 : 0x17C)));
+    ky = std::bit_cast<float>(Rd32(app + (alt ? 0x18C : 0x180)));
+    if (!(kx > 0.01f && kx < 100.0f)) kx = 1;
+    if (!(ky > 0.01f && ky < 100.0f)) ky = 1;
+  }
+  int32_t dx = int32_t(std::lround((g_real_x - gx) / kx));
+  int32_t dy = int32_t(std::lround((g_real_y - gy) / ky));
+  *sx = g_recentre_x + dx;
+  *sy = g_recentre_y + dy;
+  static const bool debug = std::getenv("DS1_DEBUG_CURSOR") != nullptr;
+  if (debug)
+    WarnF("cursor: real %d,%d game %d,%d k %.2f,%.2f -> %d,%d\n", int(g_real_x),
+          int(g_real_y), gx, gy, kx, ky, *sx, *sy);
+  return true;
+}
+
 HLE("user32.dll", GetCursorPos, 1) {
-  Wr32(Arg(c, 0), uint32_t(g_mouse_x));
-  Wr32(Arg(c, 0) + 4, uint32_t(g_mouse_y));
+  int32_t x = g_mouse_x, y = g_mouse_y;
+  SyncedCursorPos(&x, &y);
+  Wr32(Arg(c, 0), uint32_t(x));
+  Wr32(Arg(c, 0) + 4, uint32_t(y));
   return 1;
 }
 
 HLE("user32.dll", SetCursorPos, 2) {
-  int x = int32_t(Arg(c, 0)), y = int32_t(Arg(c, 1));
-  g_mouse_x = x;
-  g_mouse_y = y;
-  uint32_t hwnd;
-  {
-    std::lock_guard<std::recursive_mutex> l(g_mu);
-    hwnd = g_active;
-  }
-  // Only move the real pointer while our window has focus: the game
-  // recentres the cursor every frame and must never grab it from other
-  // applications.
-  SDL_Window* s = SdlWindowFor(hwnd);
-  if (s && !Background() && SDL_GetKeyboardFocus() == s) {
-    int ox, oy;
-    WindowOrigin(hwnd, &ox, &oy);
-    float kx, ky;
-    ModeScale(hwnd, &kx, &ky);
-    SDL_WarpMouseInWindow(s, float(x - ox) / kx, float(y - oy) / ky);
-  }
+  g_mouse_x = g_recentre_x = int32_t(Arg(c, 0));
+  g_mouse_y = g_recentre_y = int32_t(Arg(c, 1));
+  g_last_recentre_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
   return 1;
 }
 

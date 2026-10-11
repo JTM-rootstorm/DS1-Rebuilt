@@ -67,6 +67,7 @@ void InitKernel32State() {
 
   std::string exe = std::string(kGuestGameDir) + "\\DungeonSiege.exe";
   std::string cmd = "\"" + exe + "\"";
+  if (!p.game_args.empty()) cmd += " " + p.game_args;
   p.cmdline_a = HeapAllocProcess(uint32_t(cmd.size() + 1), false);
   PutStr(p.cmdline_a, cmd);
   std::u16string wcmd = win32::Widen(cmd);

@@ -28,6 +28,7 @@ struct Process {
   GuestAllocator vm;     // VirtualAlloc-style regions
   std::string game_dir;  // host path of the game install, no trailing '/'
   std::string guest_dir; // the same directory as the game sees it
+  std::string game_args; // appended to the guest command line
   uint32_t process_heap = 0;
   uint32_t cmdline_a = 0, cmdline_w = 0;
   uint32_t environ_a = 0, environ_w = 0;
@@ -64,7 +65,8 @@ uint32_t CallGuest(Ctx& c, uint32_t va, std::initializer_list<uint32_t> args);
 
 // Sets up the process (arena, image, PEB, heaps, command line) and runs
 // the guest entry point on a new guest thread. Returns the exit code.
-int RunProcess(const std::string& exe_path, const std::string& game_dir);
+int RunProcess(const std::string& exe_path, const std::string& game_dir,
+               const std::string& game_args = {});
 
 // Creates the guest-side structures of a thread (TEB, TLS, stack) and
 // initialises its Ctx. Does not start it.

@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 
@@ -135,23 +136,55 @@ void Mixer::SetListener(const Vec3& pos, const Vec3& face, const Vec3& up) {
   lup_ = Normalize(up, {0, 1, 0});
 }
 
+// Positional voices follow the Miles Fast 2D provider (Mssfast.m3d) exactly:
+// it reduces each 3D sample to a 2D volume and pan, which Mss32 turns into
+// channel gains.
+//  - volume: 127 / 10^((A + B) / 20) with A = -20 log10(vol / 127) and B =
+//    6 dB per doubling of distance beyond min_dist (so vol * min_dist / d),
+//    rounded and clamped to 0..127; 0 past max_dist; then * 71 / 100 when
+//    the source is behind the listener.
+//  - pan: 127 - floor(acos(dot(dir, up x face)) * 127 / pi), looked up in a
+//    2049-entry table; 64 when the source is at the listener.
+//  - Mss32: v = vol * master / 127; the far channel scales by a linear
+//    balance table, the near one stays full; gains are out of 2048.
 void Mixer::TargetGains(const Voice& v, float* l, float* r) const {
   float g = v.volume * master_;
   if (!v.positional) {
     *l = *r = g;
     return;
   }
-  // Inverse-distance rolloff from min_dist; inaudible past max_dist.
+  static const auto pan_table = [] {
+    std::array<uint8_t, 2049> t{};
+    for (int i = 0; i <= 2048; i++) {
+      double p = 127 - std::floor(std::acos(i / 1024.0 - 1) * 127.0 * 0.31830987732601135);
+      t[i] = uint8_t(std::clamp(p, 0.0, 127.0));
+    }
+    return t;
+  }();
   Vec3 rel = Sub(v.pos, lpos_);
   float d = std::sqrt(Dot(rel, rel));
-  float att = d <= v.min_dist ? 1.0f : d > v.max_dist ? 0.0f : v.min_dist / d;
-  float p = 0;
-  if (d > 1e-4f) {
-    Vec3 right = Normalize(Cross(lup_, lface_), {1, 0, 0});
-    p = std::clamp(Dot(rel, right) / d, -1.0f, 1.0f);
+  int vol3 = int(std::lround(std::clamp(v.volume, 0.0f, 1.0f) * 127));
+  int vol = 0;
+  if (d <= v.max_dist && vol3 > 0) {
+    float a = -20.0f * std::log10(vol3 / 127.0f);
+    float min = std::max(v.min_dist, 1e-4f);
+    float b = d <= min ? 0.0f : 6.0f * std::log2(d / min);
+    vol = std::clamp<int>(int(std::lrint(127.0 / std::pow(10.0, (a + b) * 0.05))), 0, 127);
+    if (Dot(lface_, rel) < 0) vol = vol * 71 / 100;
   }
-  *l = g * att * std::min(1.0f, 1.0f - p);
-  *r = g * att * std::min(1.0f, 1.0f + p);
+  int pan = 64;
+  if (d > 1e-4f) {
+    float dot = Dot(rel, Cross(lup_, lface_)) / d;
+    pan = pan_table[std::clamp<long>(std::lrint((dot + 1) * 1024), 0, 2048)];
+  }
+  // Mss32's balance table: 2 * pan up to 62, then full (128).
+  auto bal = [](int p) { return p < 63 ? 2 * p : 128; };
+  int mv = std::clamp(vol * int(std::lround(master_ * 127)) / 127, 0, 127);
+  int sl = bal(127 - pan) * mv / 8, sr = bal(pan) * mv / 8;
+  if (sl >= 0x7F0) sl = 0x7FF;
+  if (sr >= 0x7F0) sr = 0x7FF;
+  *l = sl / 2048.0f;
+  *r = sr / 2048.0f;
 }
 
 void Mixer::MixVoice(Voice& v, float* out, int frames) {

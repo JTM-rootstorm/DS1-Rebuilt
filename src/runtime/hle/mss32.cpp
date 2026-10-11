@@ -747,8 +747,10 @@ HLE_NAMED("mss32.dll", "_AIL_3D_sample_playback_rate@4", AIL_3D_sample_playback_
 HLE_NAMED("mss32.dll", "_AIL_set_3D_sample_distances@12", AIL_set_3D_sample_distances, 3) {
   std::lock_guard<std::mutex> l(Mu());
   if (Sample* s = FindSample(Arg(c, 0), true, "AIL_set_3D_sample_distances")) {
-    s->v.max_dist = F(Arg(c, 1));
-    s->v.min_dist = std::max(F(Arg(c, 2)), 1e-3f);
+    // Mss32 swaps the pair so the larger is max (the game passes min first).
+    float a = F(Arg(c, 1)), b = F(Arg(c, 2));
+    s->v.max_dist = std::max(a, b);
+    s->v.min_dist = std::min(a, b);
   }
   return 0;
 }

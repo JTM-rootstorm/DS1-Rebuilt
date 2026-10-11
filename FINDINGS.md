@@ -20,6 +20,19 @@ M4 findings:
   up to 25 3D samples on "Miles Fast 2D Positional Audio" (picked when
   EAX is off), MP3/WAV streams for music/voice via AIL_open_stream with
   file callbacks into the Tank file system, fade timers.
+- 3D coordinates: the game's world is right-handed (every VIEW matrix
+  has det -1); GPGSound negates z on all positions and orientations to
+  give Miles its left-handed space, so up x face is screen-right there.
+- AIL_set_3D_sample_distances is documented (S, max, min) but the game
+  passes (min, max), e.g. (6, 40); Mss32 swaps the pair so the larger is
+  max. Taking them literally made every ambient loop full volume out to
+  its max distance (loud waterfall, mis-heard panning).
+- Mssfast.m3d (read from the shipped binary), per 3D sample: volume =
+  vol * min/d past min_dist (as 127/10^(dB/20), 6 dB per doubling),
+  0 past max_dist, * 71/100 when behind the listener; pan = 127 -
+  floor(acos(dot(dir, up x face)) * 127/pi), 64 at the listener. It
+  then drives a 2D sample: Mss32 gains are T[pan] * (vol * master/127)
+  / 8 out of 2048, T = linear balance (2p below 63, else 128).
 - Game audio data: 619 PCM WAVs (22/44 kHz, 16-bit) + 131 raw MP3s in
   Sound.dsres; Mp3dec.asi in system/mss is Miles' MP3 decoder.
 - Callbacks (EOS, stream end, timers) run on a Miles service guest thread

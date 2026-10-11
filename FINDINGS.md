@@ -79,6 +79,18 @@ M4 findings:
   while the main thread rendered: the game sets DDSCL_MULTITHREADED, so
   every ddraw.dll entry point now runs under one recursive lock, like
   DirectDraw's own; the d3d9 device is created D3DCREATE_MULTITHREADED.
+- Cursor glitches on mouse-over (fixed): the game draws a software
+  cursor (0x656E02) only while GetForegroundWindow is its window: save
+  the pixels under it, blend a 64x64 ARGB image, Blt back. The main
+  thread does it on the back buffer before presenting; a cursor thread
+  does it on the primary between frames. We treated the primary as the
+  back buffer, so the cursor thread saved/restored the half-drawn next
+  frame (black squares, stale cursors, smudges). The gfx device now has
+  the game's back buffer, a front buffer (the primary: Present copies
+  the back buffer there, then shows it) and the swap chain; primary
+  Blt/Lock read and write the front buffer. Automated runs need
+  DS1_TEST_FOCUS to exercise this path (background windows are never
+  foreground).
 - Instruction lifting verified: tests/lift_x87_test (111 x87 forms) and
   tests/lift_int_test (13703 integer forms) run every form in the EXE
   lifted and natively from random states, bit-exact (configure with

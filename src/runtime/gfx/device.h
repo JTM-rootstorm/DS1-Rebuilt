@@ -84,7 +84,8 @@ class Device {
   virtual DepthId CreateDepth(int w, int h, Format fmt) = 0;
   virtual void DestroyDepth(DepthId d) = 0;
 
-  // ---- render target (color 0 = back buffer)
+  // ---- render target (color 0 = back buffer; Present copies it to the
+  // front buffer and shows that)
   virtual void SetRenderTarget(TextureId color, DepthId depth) = 0;
 
   // ---- 2D (DirectDraw Blt onto the back buffer / render target)
@@ -97,6 +98,15 @@ class Device {
   // Reads `r` of the current render target into linear memory.
   virtual void ReadBack(const Rect& r, void* dst, uint32_t pitch,
                         Format fmt) = 0;
+
+  // ---- front buffer (the DirectDraw primary): the last presented frame,
+  // which the game may also read and draw on between frames (its cursor).
+  virtual void BlitFront(const void* src, uint32_t pitch, Format fmt,
+                         const Rect& src_rect, const Rect& dst_rect) = 0;
+  virtual void ReadBackFront(const Rect& r, void* dst, uint32_t pitch,
+                             Format fmt) = 0;
+  // Shows the front buffer as it is now.
+  virtual void PresentFront() = 0;
 
   // ---- fixed-function state (D3D7 enums)
   virtual void SetRenderState(uint32_t state, uint32_t value) = 0;

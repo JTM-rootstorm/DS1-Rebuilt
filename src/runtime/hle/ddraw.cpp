@@ -43,6 +43,7 @@ constexpr guest::GUID kIID_IDirect3D7 = {0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07
 constexpr uint32_t kVidMemTotal = 64u << 20;
 
 State g_state;
+Uint64 g_last_present_ms = 0;  // SDL ticks of the last frame Present
 
 // Dev aid: DS1_SHOT_EVERY=N saves every Nth presented frame as
 // $DS1_SHOT_DIR/frame_NNNNN.bmp (default dir: current directory).
@@ -73,6 +74,7 @@ void PresentFrame() {
     }
   }
   g->Present();
+  g_last_present_ms = SDL_GetTicks();
   // Loading screens present without pumping messages; keep answering the
   // window system (compositor pings) so the window does not look hung.
   // Events are only queued for the game, as Windows would.
@@ -302,9 +304,11 @@ gfx::Format PrimaryFormat() {
   return g_state.mode_bpp == 16 ? gfx::Format::R5G6B5 : gfx::Format::X8R8G8B8;
 }
 
-bool IsRenderTarget(const Surface& s) {
-  return s.kind == Surface::Kind::Primary || s.kind == Surface::Kind::BackBuffer;
-}
+// The back buffer lives on the GPU as the render target. The primary is
+// the gfx front buffer: the last presented frame, which the game's cursor
+// thread reads and draws on between frames (save-under, then blend).
+bool IsRenderTarget(const Surface& s) { return s.kind == Surface::Kind::BackBuffer; }
+bool IsPrimary(const Surface& s) { return s.kind == Surface::Kind::Primary; }
 
 uint32_t CreateSurfaceImpl(uint32_t desc_va, uint32_t* out) {
   const DDSURFACEDESC2& d = *G<DDSURFACEDESC2>(desc_va);
@@ -471,6 +475,21 @@ void PullRenderTarget(Surface& s) {
   Gfx()->ReadBack(r, GPtr(s.mem), s.pitch, s.fmt);
 }
 
+// Brings the front buffer into the primary's guest memory.
+void PullFront(Surface& s) {
+  if (!s.mem) AllocMem(s);
+  Gfx()->ReadBackFront({0, 0, s.width, s.height}, GPtr(s.mem), s.pitch, s.fmt);
+}
+
+// Writes rows/rect `r` of the primary's guest memory to the front buffer.
+// It is shown at once only when the game is not presenting frames anyway
+// (each frame replaces the front buffer, cursor included).
+void PushFront(Surface& s, const gfx::Rect& r) {
+  if (r.right <= r.left || r.bottom <= r.top) return;
+  Gfx()->BlitFront(GPtr(s.mem), s.pitch, s.fmt, r, r);
+  if (SDL_GetTicks() - g_last_present_ms > 50) Gfx()->PresentFront();
+}
+
 uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
                  uint32_t src_rect_va, bool key, uint32_t keyval,
                  bool fill, uint32_t fill_raw, bool depth_fill, uint32_t depth_raw) {
@@ -485,6 +504,12 @@ uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
     g->Clear(0, nullptr, 2 /* ZBUFFER */, 0, z, 0);
     if (g_state.backbuffer)
       g->SetRenderTarget(0, g_state.backbuffer->zbuffer ? g_state.backbuffer->zbuffer->depth : 0);
+    return DD_OK;
+  }
+  if (fill && IsPrimary(dst)) {
+    PullFront(dst);
+    FillMem(dst, dr, fill_raw);
+    PushFront(dst, {dr.left, dr.top, dr.right, dr.bottom});
     return DD_OK;
   }
   if (fill) {
@@ -510,7 +535,15 @@ uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
   }
   guest::RECT sr = ReadRect(src_rect_va, *src);
   if (IsRenderTarget(*src)) PullRenderTarget(*src);
+  if (IsPrimary(*src)) PullFront(*src);
   if (!src->mem) return DDERR_UNSUPPORTED;
+  if (IsPrimary(dst)) {
+    if (key || src == &dst) PullFront(dst);
+    if (!dst.mem) AllocMem(dst);
+    BlitMem(dst, dr, *src, sr, key, keyval);
+    PushFront(dst, {dr.left, dr.top, dr.right, dr.bottom});
+    return DD_OK;
+  }
   if (IsRenderTarget(dst)) {
     gfx::Rect s{sr.left, sr.top, sr.right, sr.bottom};
     gfx::Rect d{dr.left, dr.top, dr.right, dr.bottom};
@@ -862,8 +895,11 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Lock", DDS7_Lock, 5) {
     WarnF("ddraw: Lock of a Z buffer is not supported\n");
     return DDERR_UNSUPPORTED;
   }
-  if (IsRenderTarget(*s)) {
-    PullRenderTarget(*s);
+  if (IsRenderTarget(*s) || IsPrimary(*s)) {
+    if (IsPrimary(*s))
+      PullFront(*s);
+    else
+      PullRenderTarget(*s);
     s->lock_snapshot.assign(GPtr(s->mem), GPtr(s->mem) + size_t(s->pitch) * s->height);
   }
   if (!s->mem) AllocMem(*s);
@@ -888,7 +924,7 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Unlock", DDS7_Unlock, 2) {
   s->locked = false;
   if (s->kind == Surface::Kind::Texture) {
     UploadLevel(*s);
-  } else if (IsRenderTarget(*s)) {
+  } else if (IsRenderTarget(*s) || IsPrimary(*s)) {
     // Write the rows the game edited back over the render target.
     const uint8_t* mem = GPtr(s->mem);
     const uint8_t* snap = s->lock_snapshot.data();
@@ -906,8 +942,11 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Unlock", DDS7_Unlock, 2) {
     s->lock_snapshot.clear();
     if (top < bottom) {
       gfx::Rect r{0, top, s->width, bottom};
-      Gfx()->Blit(GPtr(s->mem), s->pitch, s->fmt, s->width, s->height, r, r,
-                  false, 0);
+      if (IsPrimary(*s))
+        PushFront(*s, r);
+      else
+        Gfx()->Blit(GPtr(s->mem), s->pitch, s->fmt, s->width, s->height, r, r,
+                    false, 0);
     }
   }
   return DD_OK;

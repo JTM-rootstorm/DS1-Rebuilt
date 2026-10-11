@@ -74,7 +74,7 @@ class D3D9Device final : public Device {
     for (auto& [id, d] : depths_) d.surf->Release();
     if (staging_) staging_->Release();
     if (readback_) readback_->Release();
-    if (backbuffer_) backbuffer_->Release();
+    ReleaseTargets();
     if (dev_) dev_->Release();
     if (d3d_) d3d_->Release();
   }
@@ -92,10 +92,7 @@ class D3D9Device final : public Device {
     pp.PresentationInterval =
         vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
     pp.Flags = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
-    if (backbuffer_) {
-      backbuffer_->Release();
-      backbuffer_ = nullptr;
-    }
+    ReleaseTargets();
     if (!dev_) {
       Check(d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
                                reinterpret_cast<HWND>(window_),
@@ -126,8 +123,19 @@ class D3D9Device final : public Device {
                                               &d.surf, nullptr),
               "CreateDepthStencilSurface");
     }
-    Check(dev_->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer_),
+    Check(dev_->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &swap_),
           "GetBackBuffer");
+    // The game draws into its own back buffer; Present copies that to the
+    // front buffer, which is then shown. Keeping the front separate lets
+    // the game read and draw on it between frames without touching the
+    // next frame (as with a DirectDraw primary surface).
+    for (IDirect3DSurface9** t : {&backbuffer_, &front_}) {
+      Check(dev_->CreateRenderTarget(UINT(w), UINT(h), D3DFMT_X8R8G8B8,
+                                     D3DMULTISAMPLE_NONE, 0, FALSE, t, nullptr),
+            "CreateRenderTarget");
+      dev_->ColorFill(*t, nullptr, D3DCOLOR_XRGB(0, 0, 0));
+    }
+    dev_->SetRenderTarget(0, backbuffer_);
     width_ = w;
     height_ = h;
     return true;
@@ -223,7 +231,41 @@ class D3D9Device final : public Device {
   void Blit(const void* src, uint32_t pitch, Format fmt, int sw, int sh,
             const Rect& sr, const Rect& dr, bool colorkey,
             uint32_t key) override {
+    (void)sw;
     (void)sh;
+    DrawImage(src, pitch, fmt, sr, dr, colorkey, key);
+  }
+
+  void BlitFront(const void* src, uint32_t pitch, Format fmt, const Rect& sr,
+                 const Rect& dr) override {
+    IDirect3DSurface9 *rt = nullptr, *ds = nullptr;
+    D3DVIEWPORT9 vp;
+    dev_->GetRenderTarget(0, &rt);
+    dev_->GetDepthStencilSurface(&ds);
+    dev_->GetViewport(&vp);
+    dev_->SetRenderTarget(0, front_);
+    dev_->SetDepthStencilSurface(nullptr);
+    DrawImage(src, pitch, fmt, sr, dr, false, 0);
+    dev_->SetRenderTarget(0, rt);
+    dev_->SetDepthStencilSurface(ds);
+    dev_->SetViewport(&vp);
+    if (rt) rt->Release();
+    if (ds) ds->Release();
+  }
+
+  void ReadBackFront(const Rect& r, void* dst, uint32_t pitch, Format fmt) override {
+    ReadSurface(front_, r, dst, pitch, fmt);
+  }
+
+  void PresentFront() override {
+    if (in_scene_) EndScene();
+    dev_->StretchRect(front_, nullptr, swap_, nullptr, D3DTEXF_POINT);
+    dev_->Present(nullptr, nullptr, nullptr, nullptr);
+  }
+
+ private:
+  void DrawImage(const void* src, uint32_t pitch, Format fmt, const Rect& sr,
+                 const Rect& dr, bool colorkey, uint32_t key) {
     int w = sr.right - sr.left, h = sr.bottom - sr.top;
     if (w <= 0 || h <= 0) return;
     EnsureStaging(w, h);
@@ -249,7 +291,6 @@ class D3D9Device final : public Device {
       }
     }
     staging_->UnlockRect(0);
-    (void)sw;
 
     // Draw it as a screen-space quad with private state.
     IDirect3DStateBlock9* sb = nullptr;
@@ -298,9 +339,18 @@ class D3D9Device final : public Device {
     }
   }
 
+
+ public:
   void ReadBack(const Rect& r, void* dst, uint32_t pitch, Format fmt) override {
     IDirect3DSurface9* rt = nullptr;
     dev_->GetRenderTarget(0, &rt);
+    ReadSurface(rt, r, dst, pitch, fmt);
+    rt->Release();
+  }
+
+ private:
+  void ReadSurface(IDirect3DSurface9* rt, const Rect& r, void* dst, uint32_t pitch,
+                   Format fmt) {
     D3DSURFACE_DESC d;
     rt->GetDesc(&d);
     if (readback_) {
@@ -316,7 +366,6 @@ class D3D9Device final : public Device {
                                                  D3DPOOL_SYSTEMMEM, &readback_,
                                                  nullptr))) {
       readback_ = nullptr;
-      rt->Release();
       return;
     }
     dev_->GetRenderTargetData(rt, readback_);
@@ -345,8 +394,9 @@ class D3D9Device final : public Device {
       }
       readback_->UnlockRect();
     }
-    rt->Release();
   }
+
+ public:
 
   void SetRenderState(uint32_t s, uint32_t v) override {
     switch (s) {
@@ -475,7 +525,8 @@ class D3D9Device final : public Device {
 
   void Present() override {
     if (in_scene_) EndScene();
-    dev_->Present(nullptr, nullptr, nullptr, nullptr);
+    dev_->StretchRect(backbuffer_, nullptr, front_, nullptr, D3DTEXF_POINT);
+    PresentFront();
   }
 
  private:
@@ -489,6 +540,14 @@ class D3D9Device final : public Device {
     for (uint32_t i = 0; i <= uint32_t(Format::DXT5); i++)
       if (ToD3D(Format(i)) == f) return Format(i);
     return Format::Unknown;
+  }
+
+  void ReleaseTargets() {
+    for (IDirect3DSurface9** t : {&swap_, &backbuffer_, &front_})
+      if (*t) {
+        (*t)->Release();
+        *t = nullptr;
+      }
   }
 
   void EnsureStaging(int w, int h) {
@@ -511,7 +570,9 @@ class D3D9Device final : public Device {
   SDL_Window* window_;
   IDirect3D9* d3d_ = nullptr;
   IDirect3DDevice9* dev_ = nullptr;
-  IDirect3DSurface9* backbuffer_ = nullptr;
+  IDirect3DSurface9* swap_ = nullptr;        // the swap chain's back buffer
+  IDirect3DSurface9* backbuffer_ = nullptr;  // the game's back buffer
+  IDirect3DSurface9* front_ = nullptr;       // the DirectDraw primary
   IDirect3DTexture9* staging_ = nullptr;
   IDirect3DSurface9* readback_ = nullptr;  // system-memory copy of the RT
   std::map<uint32_t, IDirect3DTexture9*> textures_;

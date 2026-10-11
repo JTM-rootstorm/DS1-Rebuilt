@@ -24,6 +24,13 @@ struct LiftedFn {
 extern const LiftedFn kLiftedFunctions[];
 extern const uint32_t kLiftedFunctionCount;
 
+// Thrown at manifest `resume` sites: the guest abandons the current call
+// chain and continues at `target` in the frame whose EBP is `ebp` (SEH
+// __except blocks). Caught by the lifted function owning that frame.
+struct GuestResume {
+  uint32_t target, ebp, from;
+};
+
 // Runtime services called from lifted code (runtime/dispatch.cpp).
 // `va` is always the guest address of the instruction doing the call, for
 // diagnostics.

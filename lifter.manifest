@@ -4,8 +4,16 @@
 #   entry <hexva> [name]   extra function entry point
 #   name  <hexva> <name>   name a function (comments in generated code)
 #   probe <hexva> [name]   call ds1::Probe() on entry (runtime logs it)
+#   resume <hexva>         this call/jmp abandons the current call chain
+#                          (SEH): throw GuestResume to the owning frame
 #
 # Addresses are guest VAs in hex, no 0x prefix needed.
 
 name  004023DD WinMain
 probe 004023DD WinMain
+
+# SEH: __except_handler3 (0040A020) *calls* the __except block, which starts
+# with `mov esp, [ebp-18h]` and never returns. Resume instead of calling.
+name   0040A020 __except_handler3
+name   00409F28 _global_unwind2
+resume 0040A0A3

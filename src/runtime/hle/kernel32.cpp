@@ -282,14 +282,16 @@ HLE("kernel32.dll", GetSystemInfo, 1) {
 }
 
 HLE("kernel32.dll", GlobalMemoryStatus, 1) {
-  // A 2002-era-plausible but roomy machine: 1 GiB RAM.
+  // A roomy 2002-era machine: 1 GiB RAM, 1.5 GiB page file. Every value
+  // stays below 2 GiB: the game compares these as signed ints (a 2 GiB
+  // page file reads as negative and triggers its "swap file" error).
   uint32_t ms = Arg(c, 0);
   Wr32(ms + 0, 32);
   Wr32(ms + 4, 30);           // memory load %
   Wr32(ms + 8, 0x40000000);   // total phys
   Wr32(ms + 12, 0x30000000);  // avail phys
-  Wr32(ms + 16, 0x80000000);  // total page file
-  Wr32(ms + 20, 0x70000000);
+  Wr32(ms + 16, 0x60000000);  // total page file
+  Wr32(ms + 20, 0x50000000);  // avail page file
   Wr32(ms + 24, 0x7FFE0000);  // total virtual
   Wr32(ms + 28, 0x70000000);  // avail virtual
   return 0;
@@ -398,6 +400,8 @@ HLE("kernel32.dll", VirtualAlloc, 4) {
   uint32_t addr = Arg(c, 0), size = Arg(c, 1), type = Arg(c, 2),
            prot = Arg(c, 3);
   GuestAllocator& vm = g_proc->vm;
+  // MEM_COMMIT with no address reserves and commits, like MEM_RESERVE|COMMIT.
+  if (!addr && (type & kMemCommit)) type |= kMemReserve;
   if (type & kMemReserve) {
     uint32_t base = vm.Reserve(addr, size + (addr & 0xFFFF),
                                type & kMemTopDown);

@@ -669,6 +669,16 @@ void InsnEmitter::Emit() {
   switch (m) {
     // ---- control flow ---------------------------------------------------
     case ZYDIS_MNEMONIC_CALL: {
+      if (p_.resume_sites.count(in_.va)) {
+        // The callee abandons this call chain (an SEH __except block that
+        // starts with `mov esp, [ebp-18h]`): unwind the host stack to the
+        // lifted function owning the frame instead of calling.
+        if (!PrepareMem()) return Unimpl();
+        L("const uint32_t t = " + Read(0) + ";");
+        L(Fmt("LIFT_SPILL; throw ::ds1::GuestResume{t, ebp, %s};",
+              Hex(in_.va).c_str()));
+        return;
+      }
       if (IsImm(0)) {
         uint32_t t = RelTarget(in_);
         if (t == next) {  // call $+5; pop reg: reads EIP
@@ -1017,6 +1027,19 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
   auto nm = p_.names.find(f.entry);
   o += "// " + (nm != p_.names.end() ? nm->second : FnName(f.entry)) + "\n";
   o += "void " + FnName(f.entry) + "(::ds1::Ctx& c) {\n  LIFT_ENTER\n";
+  // Functions that register an SEH frame (write fs:[0]) can be resumed into
+  // by their __except blocks; see GuestResume.
+  bool seh = false;
+  for (const auto& [va, in] : f.insns) {
+    if (!in.ok || in.d.mnemonic != ZYDIS_MNEMONIC_MOV) continue;
+    const auto& o0 = in.ops[0];
+    if (o0.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+        o0.mem.segment == ZYDIS_REGISTER_FS &&
+        o0.mem.base == ZYDIS_REGISTER_NONE &&
+        o0.mem.index == ZYDIS_REGISTER_NONE && o0.mem.disp.value == 0)
+      seh = true;
+  }
+  if (seh) o += "  try {\n";
   auto pr = p_.probes.find(f.entry);
   if (pr != p_.probes.end())
     o += Fmt("  LIFT_SPILL; ::ds1::Probe(c, 0x%Xu, \"%s\"); LIFT_RELOAD;\n",
@@ -1064,6 +1087,12 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
       }
     }
   }
+  if (seh)
+    o += "  } catch (const ::ds1::GuestResume& r) {\n"
+         "    if (r.ebp != ebp) throw;  // another activation's frame\n"
+         "    ::ds1::Dispatch(c, r.target, r.from);\n"
+         "    return;\n"
+         "  }\n";
   o += "}\n\n";
 }
 

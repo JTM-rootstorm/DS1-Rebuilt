@@ -120,6 +120,8 @@ bool Program::LoadManifest(const std::string& path, std::string* err) {
       if (!name.empty()) names[va] = name;
     } else if (kind == "name") {
       names[va] = name;
+    } else if (kind == "resume") {
+      resume_sites.insert(va);
     } else if (kind == "probe") {
       entries.insert(va);
       probes[va] = name.empty() ? "probe" : name;

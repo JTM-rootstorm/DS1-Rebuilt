@@ -1,11 +1,28 @@
 # Findings
 
 ## Status (2026-10-10)
-M0 and M1 done: the recompiled binary runs the VC6 CRT startup and every
-static constructor natively and reaches WinMain (004023DD, probe fires
-with hInstance 00400000, nShow 10). Next stop: user32!SetWindowsHookExA
-from 00414193 inside the app setup (M2: windows, hooks, message loop,
-SEH).
+M0, M1 and M2 done. The recompiled binary runs the CRT, all static
+constructors and WinMain's app setup natively: keyboard LL hook, main
+window (SDL3, class gpgwndclass_dungeonsiege_exe, 1024x768 WS_POPUP),
+registry and INI lookup, its 200 MB commit probe, temp-file checks, and
+stops at the first DirectDraw call: ddraw!DirectDrawEnumerateExA from
+0065C6FD (renderer device enumeration). Next: M3, DirectDraw/D3D7 on the
+d3d9 backend.
+- Game-visible facts learned in M2:
+  - It reads DungeonSiege.ini from My Documents\Dungeon Siege (absent on
+    first run -> defaults), maps under the per-user tree.
+  - GlobalMemoryStatus values are compared as signed ints; anything
+    >= 2 GiB reads as negative and triggers the "swap file" error.
+  - It probes VirtualAlloc(NULL, 200 MB, MEM_COMMIT) (commit without
+    reserve) and expects success.
+  - LANGUAGE.DLL (localisation) is tried and absent in the GOG install;
+    the game continues without it.
+  - It resolves dbghelp (FuBi), OpenThread, SHGetFolderPathA/W and
+    IsProcessorFeaturePresent dynamically.
+- SEH is wired (RaiseException/RtlUnwind walk the guest fs:[0] chain; the
+  __except block call in __except_handler3 at 0040A0A3 is a manifest
+  `resume` site; 93 functions that write fs:[0] catch GuestResume) but has
+  not been exercised by the game yet.
 - ds1_lift: 31292 functions (27660 Ghidra/exports + 3632 from code
   immediates and .rdata/.data pointer scans), 1.17M instructions, 98 C++
   files (~125 MB), -O2 build in ~30-40 s on 16 cores. 151 "unimplemented"

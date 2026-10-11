@@ -67,9 +67,15 @@ if(DS1_GENERATED AND TARGET ds1_x87)
     src/runtime/hle/kernel32_sync.cpp
     src/runtime/hle/advapi32.cpp
     src/runtime/hle/user32_input.cpp
+    src/runtime/hle/user32_window.cpp
+    src/runtime/hle/gdi32.cpp
+    src/runtime/hle/kernel32_seh.cpp
+    src/runtime/hle/kernel32_misc.cpp
+    src/runtime/hle/shell_net.cpp
     $<TARGET_OBJECTS:ds1_lifted>)
   target_include_directories(ds1 PRIVATE src)
-  target_link_libraries(ds1 PRIVATE ds1_image ds1_x87 Threads::Threads)
+  target_link_libraries(ds1 PRIVATE ds1_image ds1_x87 SDL3::SDL3
+                        Threads::Threads)
 endif()
 
 # Maps DungeonSiege.exe into the guest arena and reports what the HLE

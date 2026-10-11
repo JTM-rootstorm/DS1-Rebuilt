@@ -4,6 +4,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 
 #include "runtime/hle/hle.h"
@@ -235,6 +237,8 @@ HLE("user32.dll", GetSystemMetrics, 1) {
     case 37: return 4;
     case 43: return 3;    // SM_CMOUSEBUTTONS
     case 75: return 1;    // SM_MOUSEWHEELPRESENT
+    case 76: return 0;    // SM_XVIRTUALSCREEN
+    case 77: return 0;    // SM_YVIRTUALSCREEN
     case 78: return uint32_t(g_display_w);  // SM_CXVIRTUALSCREEN
     case 79: return uint32_t(g_display_h);
     case 80: return 1;    // SM_CMONITORS

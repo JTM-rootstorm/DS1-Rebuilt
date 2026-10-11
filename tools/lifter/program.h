@@ -25,11 +25,13 @@ struct Program {
   std::map<uint32_t, std::vector<uint32_t>> jumptables;  // jmp va -> targets
   std::set<uint32_t> noreturn_iat;            // IAT slots of ExitProcess etc.
   std::map<uint32_t, std::string> probes;     // manifest: probe on entry
+  std::set<uint32_t> resume_sites;            // manifest: calls/jmps that
+                                              // abandon the stack (SEH)
 
   bool Load(const std::string& exe, const std::string& symdir,
             std::string* err);
 
-  // Applies lifter.manifest (entry/name/probe lines).
+  // Applies lifter.manifest (entry/name/probe/resume lines).
   bool LoadManifest(const std::string& path, std::string* err);
 
   bool InText(uint32_t va) const { return va >= text_lo && va < text_hi; }

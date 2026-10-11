@@ -141,6 +141,13 @@ int main(int argc, char** argv) {
     F80 b = Value(a.se & 0x7FFF);
     if (Rand() % 16 == 0) b = {a.sig ^ (Rand() % 4), a.se};  // cancellation
     uint16_t cw = uint16_t(0x007F | kPc[Rand() % 3] | (Rand() % 4) << 10);
+    if (Rand() % 4 == 0) {  // the game's case: PC=24 (RC=chop there), 24-bit operands
+      cw = uint16_t(0x007F | (Rand() % 4) << 10);
+      a.sig = (a.sig | 0x8000000000000000ull) & ~((1ull << 40) - 1);
+      b.sig = (b.sig | 0x8000000000000000ull) & ~((1ull << 40) - 1);
+      if (!(a.se & 0x7FFF)) a.se |= 0x3FFF;
+      if (!(b.se & 0x7FFF)) b.se |= 0x3FFF;
+    }
     int k = int(Rand() % 11);
     if (k >= 8) a = Angle();
     bool st0_first = Rand() & 1;

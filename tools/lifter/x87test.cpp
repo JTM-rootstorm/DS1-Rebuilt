@@ -6,8 +6,10 @@
 
 #include "x87test.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -75,24 +77,57 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
     }
   }
 
-  // A scratch program holding each form at its own 16-byte slot, + ret.
+  // Sequences: random straight-line runs of forms, lifted as one block, so
+  // the lifter's x87 runs (locals, one guard, write-back) are checked
+  // against the CPU too. Transcendentals (1-ulp differences would compound)
+  // and fldcw (could unmask exceptions, which trap natively) stay out.
+  std::vector<const Form*> pool;
+  for (const auto& [k, fm] : forms) {
+    const std::string& t = fm.text;
+    bool skip = false;
+    for (const char* n : {"fldcw", "fsin", "fcos", "fptan", "fpatan", "f2xm1", "fyl2x"})
+      if (t.rfind(n, 0) == 0) skip = true;
+    if (!skip) pool.push_back(&fm);
+  }
+  std::vector<Form> seqs;
+  std::mt19937 rng(20261011);
+  for (int n = 0; n < 4000 && !pool.empty(); n++) {
+    Form sq;
+    int len = 3 + int(rng() % 8);
+    for (int i = 0; i < len; i++) {
+      const Form* fm = pool[rng() % pool.size()];
+      // fnstsw ax rewrites the base of the [eax] operands: last only.
+      while (i + 1 < len && fm->text.rfind("fnstsw ax", 0) == 0)
+        fm = pool[rng() % pool.size()];
+      sq.bytes.insert(sq.bytes.end(), fm->bytes.begin(), fm->bytes.end());
+      sq.text += (i ? "; " : "") + fm->text;
+      sq.mem_bytes = std::max(sq.mem_bytes, fm->mem_bytes);
+    }
+    sq.example_va = 0;
+    seqs.push_back(sq);
+  }
+
+  // A scratch program holding each form (16-byte slots) and sequence
+  // (128-byte slots), each followed by ret.
   Program q;
   if (!q.mem.Reserve()) return 1;
   const uint32_t base = 0x00401000;
-  uint32_t size = uint32_t(forms.size()) * 16 + 0x1000;
+  uint32_t size = uint32_t(forms.size()) * 16 + uint32_t(seqs.size()) * 128 + 0x1000;
   q.mem.Commit(base, size, ds1::Prot::RWX);
   q.text_lo = base;
   q.text_hi = base + size;
   std::vector<std::pair<uint32_t, const Form*>> slots;
   uint32_t va = base;
-  for (const auto& [k, fm] : forms) {
+  auto place = [&](const Form& fm, uint32_t step) {
     std::vector<uint8_t> code = fm.bytes;
     code.push_back(0xC3);  // ret
     for (size_t i = 0; i < code.size(); i++) q.mem.write<uint8_t>(va + uint32_t(i), code[i]);
     q.entries.insert(va);
     slots.push_back({va, &fm});
-    va += 16;
-  }
+    va += step;
+  };
+  for (const auto& [k, fm] : forms) place(fm, 16);
+  for (const auto& fm : seqs) place(fm, 128);
 
   Emitter em(q, dec);
   std::string body;
@@ -123,12 +158,12 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
     std::string text = fm->text;
     for (char& ch : text)
       if (ch == '"' || ch == '\\') ch = '\'';
-    char buf[512];
-    std::snprintf(buf, sizeof buf,
-                  "  {&ds1::gen::f_%08X, {%s}, %zu, %d, \"%s\", 0x%08X},\n", sva,
-                  bytes.c_str(), fm->bytes.size(), fm->mem_bytes, text.c_str(),
-                  fm->example_va);
-    o += buf;
+    char head[64], tail[64];
+    std::snprintf(head, sizeof head, "  {&ds1::gen::f_%08X, {", sva);
+    std::snprintf(tail, sizeof tail, "}, %zu, %d, \"", fm->bytes.size(), fm->mem_bytes);
+    o += head + bytes + tail + text;
+    std::snprintf(tail, sizeof tail, "\", 0x%08X},\n", fm->example_va);
+    o += tail;
   }
   o += "};\nextern const int kX87FormCount = " + std::to_string(slots.size()) + ";\n";
 
@@ -136,7 +171,8 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
   if (!fp) return 1;
   std::fwrite(o.data(), 1, o.size(), fp);
   std::fclose(fp);
-  std::printf("x87 forms: %zu -> %s\n", slots.size(), out.c_str());
+  std::printf("x87 forms: %zu (%zu sequences) -> %s\n", slots.size(), seqs.size(),
+              out.c_str());
   return 0;
 }
 

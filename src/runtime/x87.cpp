@@ -25,6 +25,8 @@
 #include "runtime/x87.h"
 
 #include <bit>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
 
 extern "C" {
@@ -191,7 +193,8 @@ extFloat80_t ToSf(F80 v) {
 }
 F80 FromSf(extFloat80_t v) { return {v.signif, v.signExp}; }
 
-int RcOf(const State& s) { return (s.cw >> 10) & 3; }
+int RcOf(uint32_t cw) { return (cw >> 10) & 3; }
+int RcOf(const State& s) { return RcOf(s.cw); }
 
 uint8_t SfMode(int rc) {
   static constexpr uint8_t kModes[4] = {
@@ -202,13 +205,14 @@ uint8_t SfMode(int rc) {
 
 // PC 00 = 24 bits, 10 = 53, 11 = 64. The reserved 01 behaves as 64 bits
 // on the CPUs we checked.
-uint8_t SfPrecision(const State& s) {
-  switch ((s.cw >> 8) & 3) {
+uint8_t SfPrecision(uint32_t cw) {
+  switch ((cw >> 8) & 3) {
     case 0: return 32;
     case 2: return 64;
     default: return 80;
   }
 }
+uint8_t SfPrecision(const State& s) { return SfPrecision(s.cw); }
 
 void SfBegin(uint8_t mode, uint8_t precision) {
   softfloat_roundingMode = mode;
@@ -249,7 +253,7 @@ struct Rounded {
   bool tiny;       // below the normal range (after rounding)
 };
 
-void ShiftRightJam128(uint64_t& hi, uint64_t& lo, int n) {
+X87_INLINE void ShiftRightJam128(uint64_t& hi, uint64_t& lo, int n) {
   if (n <= 0) return;
   if (n >= 128) {
     lo = (hi | lo) != 0;
@@ -266,6 +270,28 @@ void ShiftRightJam128(uint64_t& hi, uint64_t& lo, int n) {
   }
 }
 
+// keep = the top 64 - drop bits of hi:lo, rest = the rest as a fraction of
+// 2^64 with a sticky bit. (Functions, not lambdas in RoundPack: compilers
+// left the lambdas out of line.)
+X87_INLINE void RpSplit(uint64_t h, uint64_t l, int drop, uint64_t* keep, uint64_t* rest) {
+  if (drop == 0) {
+    *keep = h;
+    *rest = l;
+  } else {
+    *keep = h >> drop;
+    *rest = (h << (64 - drop)) | (l != 0);
+  }
+}
+// Whether rounding with RC increments the kept magnitude.
+X87_INLINE bool RpInc(int rc, bool sign, uint64_t keep, uint64_t rest) {
+  switch (rc) {
+    case 0: return rest > kHalf || (rest == kHalf && (keep & 1));
+    case 1: return sign && rest != 0;
+    case 2: return !sign && rest != 0;
+    default: return false;
+  }
+}
+
 // Rounds (-1)^sign * (hi + lo/2^64) / 2^63 * 2^(exp - 0x3FFF), hi
 // normalised (bit 63 set), to `prec` significand bits with RC `rc`, the
 // way the x87 rounds into a register: full 15-bit exponent range, gradual
@@ -276,36 +302,19 @@ X87_INLINE Rounded RoundPack(bool sign, int32_t exp, uint64_t hi, uint64_t lo, i
   Rounded out{};
   const int drop = 64 - prec;
   const uint64_t keep_max = prec == 64 ? ~0ull : (1ull << prec) - 1;
-  auto split = [&](uint64_t h, uint64_t l, uint64_t* keep, uint64_t* rest) {
-    if (drop == 0) {
-      *keep = h;
-      *rest = l;
-    } else {
-      *keep = h >> drop;
-      *rest = (h << (64 - drop)) | (l != 0);
-    }
-  };
-  auto increments = [&](uint64_t keep, uint64_t rest) {
-    switch (rc) {
-      case 0: return rest > kHalf || (rest == kHalf && (keep & 1));
-      case 1: return sign && rest != 0;
-      case 2: return !sign && rest != 0;
-      default: return false;
-    }
-  };
 
   bool denormal = false, tiny = false;
   if (exp < 1) {
     uint64_t keep, rest;
-    split(hi, lo, &keep, &rest);
-    tiny = exp < 0 || !(keep == keep_max && increments(keep, rest));
+    RpSplit(hi, lo, drop, &keep, &rest);
+    tiny = exp < 0 || !(keep == keep_max && RpInc(rc, sign, keep, rest));
     ShiftRightJam128(hi, lo, 1 - exp);
     exp = 1;
     denormal = true;
   }
   uint64_t keep, rest;
-  split(hi, lo, &keep, &rest);
-  bool inc = increments(keep, rest);
+  RpSplit(hi, lo, drop, &keep, &rest);
+  bool inc = RpInc(rc, sign, keep, rest);
   if (rest) out.flags |= kPE;
   if (tiny && rest) out.flags |= kUE;
   out.tiny = tiny;
@@ -741,8 +750,8 @@ extFloat80_t SfApply(MathOp op, extFloat80_t a, extFloat80_t b) {
 
 bool SameBits(F80 a, F80 b) { return a.sig == b.sig && a.se == b.se; }
 
-int PrecBits(const State& s) {
-  switch ((s.cw >> 8) & 3) {
+int PrecBits(uint32_t cw) {
+  switch ((cw >> 8) & 3) {
     case 0: return 24;
     case 2: return 53;
     default: return 64;
@@ -762,8 +771,25 @@ int Clz128(uint64_t hi, uint64_t lo) {
 // (128 significand bits, the last one sticky) rounded by RoundPack. This
 // is the common case; SoftFloat (below) covers the rest and is the
 // reference the fast path is tested against (tests/x87_test.cpp).
-X87_INLINE Result FastArith(const State& s, MathOp op, F80 a, F80 b) {
-  const int rc = RcOf(s), prec = PrecBits(s);
+// Single precision, round to nearest, two normal operands with 24-bit
+// significands: the game's common case. The core is run::Fast24 (x87.h),
+// which lifted runs inline, so both paths share it.
+X87_INLINE bool Fast24(int rc, MathOp op, F80 a, F80 b, Result* r) {
+  if (op == MathOp::Div) return false;
+  run::RV rv;
+  run::F24Op o = op == MathOp::Add ? run::F24Op::Add
+               : op == MathOp::Sub ? run::F24Op::Sub : run::F24Op::Mul;
+  if (!run::Fast24(o, rc, run::ToV(a), run::ToV(b), &rv)) return false;
+  *r = {{rv.sig, uint16_t(rv.meta)}, uint16_t(rv.meta >> 16), ((rv.meta >> 32) & 1) != 0};
+  return true;
+}
+
+X87_INLINE Result FastArith(uint32_t cw, MathOp op, F80 a, F80 b) {
+  if ((cw & 0x0300) == 0) {  // PC=24
+    Result r;
+    if (Fast24(RcOf(cw), op, a, b, &r)) return r;
+  }
+  const int rc = RcOf(cw), prec = PrecBits(cw);
   int32_t ea = ExpOf(a), eb = ExpOf(b);
   bool sa = SignOf(a), sb = SignOf(b);
   bool sign;
@@ -864,10 +890,10 @@ X87_INLINE Result FastArith(const State& s, MathOp op, F80 a, F80 b) {
 // a op b with x87 operand checks. `mem_denormal` marks a memory operand
 // that was a denormal before conversion (it raises DE like a register
 // one).
-X87_INLINE Result Arith(const State& s, MathOp op, F80 a, F80 b, bool mem_denormal) {
+X87_INLINE Result Arith(uint32_t cw, MathOp op, F80 a, F80 b, bool mem_denormal) {
   if (!mem_denormal && IsNormalOrZero(a) && IsNormalOrZero(b) &&
       !(op == MathOp::Div && IsZero(b)) && !g_softfloat_only)
-    return FastArith(s, op, a, b);
+    return FastArith(cw, op, a, b);
   Result r{};
   if (IsUnsupported(a) || IsUnsupported(b)) return {kIndefinite, kIE, false};
   if (IsNaN(a) || IsNaN(b)) {
@@ -896,8 +922,8 @@ X87_INLINE Result Arith(const State& s, MathOp op, F80 a, F80 b, bool mem_denorm
   }
   if (IsDenormal(a) || IsDenormal(b) || mem_denormal) r.flags |= kDE;
 
-  int rc = RcOf(s);
-  uint8_t prec = SfPrecision(s);
+  int rc = RcOf(cw);
+  uint8_t prec = SfPrecision(cw);
   extFloat80_t x = ToSf(Canonical(a)), y = ToSf(Canonical(b));
   SfBegin(SfMode(rc), prec);
   r.v = FromSf(SfApply(op, x, y));
@@ -913,14 +939,14 @@ X87_INLINE Result Arith(const State& s, MathOp op, F80 a, F80 b, bool mem_denorm
 
 // Maps the instruction form onto the operation; dst is the register that
 // receives the result.
-X87_INLINE Result DoOp(const State& s, Op op, F80 dst, F80 src, bool src_denormal) {
+X87_INLINE Result DoOp(uint32_t cw, Op op, F80 dst, F80 src, bool src_denormal) {
   switch (op) {
-    case Op::Add: return Arith(s, MathOp::Add, dst, src, src_denormal);
-    case Op::Mul: return Arith(s, MathOp::Mul, dst, src, src_denormal);
-    case Op::Sub: return Arith(s, MathOp::Sub, dst, src, src_denormal);
-    case Op::Div: return Arith(s, MathOp::Div, dst, src, src_denormal);
-    case Op::SubR: return Arith(s, MathOp::Sub, src, dst, src_denormal);
-    case Op::DivR: return Arith(s, MathOp::Div, src, dst, src_denormal);
+    case Op::Add: return Arith(cw, MathOp::Add, dst, src, src_denormal);
+    case Op::Mul: return Arith(cw, MathOp::Mul, dst, src, src_denormal);
+    case Op::Sub: return Arith(cw, MathOp::Sub, dst, src, src_denormal);
+    case Op::Div: return Arith(cw, MathOp::Div, dst, src, src_denormal);
+    case Op::SubR: return Arith(cw, MathOp::Sub, src, dst, src_denormal);
+    case Op::DivR: return Arith(cw, MathOp::Div, src, dst, src_denormal);
   }
   return {};
 }
@@ -932,7 +958,7 @@ void ArithSt0Mem(State& s, Op op, F80 src, bool src_denormal) {
     Put(s, 0, kIndefinite);
     return;
   }
-  Commit(s, 0, DoOp(s, op, Get(s, 0), src, src_denormal));
+  Commit(s, 0, DoOp(s.cw, op, Get(s, 0), src, src_denormal));
 }
 
 // --- compares --------------------------------------------------------
@@ -989,37 +1015,42 @@ void CompareWith(State& s, F80 b, bool quiet, bool b_denormal,
   SetCC(s, cc);  // C1 cleared
 }
 
+// The result of a store to memory: bits, flags, C1.
+struct Stored {
+  uint64_t bits;
+  uint16_t flags;
+  bool up;
+};
+
 // --- integer stores --------------------------------------------------
 
-int64_t StoreInt(State& s, int64_t lo, int64_t hi) {
-  Wait(s);
-  SetC1(s, false);
-  const int64_t indefinite = lo;
-  if (Empty(s, 0)) {
-    Underflow(s);
-    return indefinite;
-  }
-  F80 v = Get(s, 0);
-  if (IsUnsupported(v) || ExpOf(v) == 0x7FFF) {
-    Raise(s, kIE);
-    return indefinite;
-  }
-  int rc = RcOf(s);
+// FIST: `lo` is also the integer indefinite.
+Stored StoreIntValue(uint32_t cw, F80 v, int64_t lo, int64_t hi) {
+  const uint64_t indefinite = uint64_t(lo);
+  if (IsUnsupported(v) || ExpOf(v) == 0x7FFF) return {indefinite, kIE, false};
+  int rc = RcOf(cw);
   extFloat80_t x = ToSf(Canonical(v));
   SfBegin(SfMode(rc), 80);
   int64_t r = extF80_to_i64(x, SfMode(rc), true);
   uint16_t flags = FromSfFlags(softfloat_exceptionFlags);
-  if ((flags & kIE) || r < lo || r > hi) {
-    Raise(s, kIE);
-    return indefinite;
+  if ((flags & kIE) || r < lo || r > hi) return {indefinite, kIE, false};
+  bool up = false;
+  if (flags & kPE)
+    up = RoundedUp(rc, SignOf(v), [&] { return r != extF80_to_i64_r_minMag(x, false); });
+  return {uint64_t(r), flags, up};
+}
+
+int64_t StoreInt(State& s, int64_t lo, int64_t hi) {
+  Wait(s);
+  SetC1(s, false);
+  if (Empty(s, 0)) {
+    Underflow(s);
+    return lo;
   }
-  if (flags & kPE) {
-    SetC1(s, RoundedUp(rc, SignOf(v), [&] {
-            return r != extF80_to_i64_r_minMag(x, false);
-          }));
-  }
-  Raise(s, flags);
-  return r;
+  Stored r = StoreIntValue(s.cw, Get(s, 0), lo, hi);
+  SetC1(s, r.up);
+  Raise(s, r.flags);
+  return int64_t(r.bits);
 }
 
 // --- transcendental cores ----------------------------------------------
@@ -1368,7 +1399,8 @@ void LoadI16(State& s, int16_t v) { LoadExact(s, FromInt(v)); }
 void LoadI32(State& s, int32_t v) { LoadExact(s, FromInt(v)); }
 void LoadI64(State& s, int64_t v) { LoadExact(s, FromInt(v)); }
 
-void LoadConst(State& s, Const k) {
+namespace {
+F80 ConstOf(uint32_t cw, Const k) {
   // The hardware rounds its internal constants with RC as if from the
   // exact value (no PE, no C1). Truncated significand, exponent, and
   // whether round-to-nearest rounds up.
@@ -1394,24 +1426,27 @@ void LoadConst(State& s, Const k) {
     case Const::LN2: c = &kLN2; break;
   }
   if (c) {
-    int rc = RcOf(s);
+    int rc = RcOf(cw);
     bool up = rc == 2 || (rc == 0 && c->rn_up);  // all positive, inexact
     v = Make(false, c->exp, c->sig + (up ? 1 : 0));
   }
-  LoadExact(s, v);
+  return v;
 }
+}  // namespace
+
+void LoadConst(State& s, Const k) { LoadExact(s, ConstOf(s.cw, k)); }
 
 // --- stores ----------------------------------------------------------
 
 // FST m32/m64 of zero or of a normal value that rounds to a normal one,
 // in integers: `mant` stored fraction bits, `bias`/`emax` of the format.
 // False sends the value through SoftFloat (overflow, underflow, specials).
-bool FastStore(State& s, F80 v, int mant, int bias, int emax, uint64_t* out) {
+X87_INLINE bool FastStore(uint32_t cw, F80 v, int mant, int bias, int emax, Stored* out) {
   if (g_softfloat_only) return false;
   bool sign = SignOf(v);
   const int width = mant + 1 + (bias == 127 ? 8 : 11);
   if (IsZero(v)) {
-    *out = uint64_t(sign) << (width - 1);
+    *out = {uint64_t(sign) << (width - 1), 0, false};
     return true;
   }
   if (!IsNormal(v)) return false;
@@ -1421,7 +1456,7 @@ bool FastStore(State& s, F80 v, int mant, int bias, int emax, uint64_t* out) {
   uint64_t keep = v.sig >> drop, rest = v.sig & ((1ull << drop) - 1);
   const uint64_t half = 1ull << (drop - 1);
   bool inc;
-  switch (RcOf(s)) {
+  switch (RcOf(cw)) {
     case 0: inc = rest > half || (rest == half && (keep & 1)); break;
     case 1: inc = sign && rest; break;
     case 2: inc = !sign && rest; break;
@@ -1431,13 +1466,34 @@ bool FastStore(State& s, F80 v, int mant, int bias, int emax, uint64_t* out) {
     keep >>= 1;
     if (++e > emax) return false;  // overflow
   }
-  *out = uint64_t(sign) << (width - 1) | uint64_t(e) << mant |
-         (keep & ((1ull << mant) - 1));
-  if (rest) {
-    Raise(s, kPE);
-    SetC1(s, inc);
-  }
+  out->bits = uint64_t(sign) << (width - 1) | uint64_t(e) << mant |
+              (keep & ((1ull << mant) - 1));
+  out->flags = rest ? kPE : 0;
+  out->up = rest && inc;
   return true;
+}
+
+// FST m32 (single = true) / m64 of a register value.
+Stored StoreFloat(uint32_t cw, F80 v, bool single) {
+  if (IsUnsupported(v))
+    return {single ? 0xFFC00000ull : 0xFFF8000000000000ull, kIE, false};
+  Stored out;
+  if (single ? FastStore(cw, v, 23, 127, 254, &out)
+             : FastStore(cw, v, 52, 1023, 2046, &out))
+    return out;
+  int rc = RcOf(cw);
+  extFloat80_t x = ToSf(Canonical(v));
+  SfBegin(SfMode(rc), 80);
+  out.bits = single ? extF80_to_f32(x).v : extF80_to_f64(x).v;
+  out.flags = FromSfFlags(softfloat_exceptionFlags);
+  out.up = false;
+  if (out.flags & kPE) {
+    out.up = RoundedUp(rc, SignOf(v), [&] {
+      SfBegin(softfloat_round_minMag, 80);
+      return (single ? extF80_to_f32(x).v : extF80_to_f64(x).v) != out.bits;
+    });
+  }
+  return out;
 }
 
 uint32_t StoreF32(State& s) {
@@ -1447,26 +1503,10 @@ uint32_t StoreF32(State& s) {
     Underflow(s);
     return 0xFFC00000u;
   }
-  F80 v = Get(s, 0);
-  if (IsUnsupported(v)) {
-    Raise(s, kIE);
-    return 0xFFC00000u;
-  }
-  uint64_t fast;
-  if (FastStore(s, v, 23, 127, 254, &fast)) return uint32_t(fast);
-  int rc = RcOf(s);
-  extFloat80_t x = ToSf(Canonical(v));
-  SfBegin(SfMode(rc), 80);
-  float32_t r = extF80_to_f32(x);
-  uint16_t flags = FromSfFlags(softfloat_exceptionFlags);
-  if (flags & kPE) {
-    SetC1(s, RoundedUp(rc, SignOf(v), [&] {
-            SfBegin(softfloat_round_minMag, 80);
-            return extF80_to_f32(x).v != r.v;
-          }));
-  }
-  Raise(s, flags);
-  return r.v;
+  Stored r = StoreFloat(s.cw, Get(s, 0), true);
+  SetC1(s, r.up);
+  Raise(s, r.flags);
+  return uint32_t(r.bits);
 }
 
 uint64_t StoreF64(State& s) {
@@ -1476,28 +1516,11 @@ uint64_t StoreF64(State& s) {
     Underflow(s);
     return 0xFFF8000000000000ull;
   }
-  F80 v = Get(s, 0);
-  if (IsUnsupported(v)) {
-    Raise(s, kIE);
-    return 0xFFF8000000000000ull;
-  }
-  uint64_t fast;
-  if (FastStore(s, v, 52, 1023, 2046, &fast)) return uint64_t(fast);
-  int rc = RcOf(s);
-  extFloat80_t x = ToSf(Canonical(v));
-  SfBegin(SfMode(rc), 80);
-  float64_t r = extF80_to_f64(x);
-  uint16_t flags = FromSfFlags(softfloat_exceptionFlags);
-  if (flags & kPE) {
-    SetC1(s, RoundedUp(rc, SignOf(v), [&] {
-            SfBegin(softfloat_round_minMag, 80);
-            return extF80_to_f64(x).v != r.v;
-          }));
-  }
-  Raise(s, flags);
-  return r.v;
+  Stored r = StoreFloat(s.cw, Get(s, 0), false);
+  SetC1(s, r.up);
+  Raise(s, r.flags);
+  return r.bits;
 }
-
 F80 StoreF80(State& s) {
   Wait(s);
   SetC1(s, false);
@@ -1561,7 +1584,7 @@ void ArithSt0Sti(State& s, Op op, int i) {
     Put(s, 0, kIndefinite);
     return;
   }
-  Commit(s, 0, DoOp(s, op, Get(s, 0), Get(s, i), false));
+  Commit(s, 0, DoOp(s.cw, op, Get(s, 0), Get(s, i), false));
 }
 
 void ArithStiSt0(State& s, Op op, int i) {
@@ -1571,7 +1594,7 @@ void ArithStiSt0(State& s, Op op, int i) {
     Put(s, i, kIndefinite);
     return;
   }
-  Commit(s, i, DoOp(s, op, Get(s, i), Get(s, 0), false));
+  Commit(s, i, DoOp(s.cw, op, Get(s, i), Get(s, 0), false));
 }
 
 // --- compares --------------------------------------------------------
@@ -1669,6 +1692,10 @@ void Abs(State& s) {
   Put(s, 0, v);
 }
 
+namespace {
+Result SqrtOf(uint32_t cw, F80 v);
+}  // namespace
+
 void Sqrt(State& s) {
   Wait(s);
   SetC1(s, false);
@@ -1677,7 +1704,11 @@ void Sqrt(State& s) {
     Put(s, 0, kIndefinite);
     return;
   }
-  F80 v = Get(s, 0);
+  Commit(s, 0, SqrtOf(s.cw, Get(s, 0)));
+}
+
+namespace {
+Result SqrtOf(uint32_t cw, F80 v) {
   Result r{};
   if (IsUnsupported(v)) {
     r = {kIndefinite, kIE, false};
@@ -1691,8 +1722,8 @@ void Sqrt(State& s) {
     r.v = v;
   } else {
     if (IsDenormal(v)) r.flags |= kDE;
-    int rc = RcOf(s);
-    uint8_t prec = SfPrecision(s);
+    int rc = RcOf(cw);
+    uint8_t prec = SfPrecision(cw);
     extFloat80_t x = ToSf(Canonical(v));
     SfBegin(SfMode(rc), prec);
     r.v = FromSf(extF80_sqrt(x));
@@ -1704,8 +1735,9 @@ void Sqrt(State& s) {
       });
     }
   }
-  Commit(s, 0, r);
+  return r;
 }
+}  // namespace
 
 void RndInt(State& s) {
   Wait(s);
@@ -2475,5 +2507,110 @@ void Restore(State& s, const uint8_t in[108]) {
   }
   ReadEnv(s, in);
 }
+
+// --- value-level operations for lifted runs ---------------------------
+
+namespace run {
+
+bool g_enabled = [] {
+  const char* e = std::getenv("DS1_X87_RUNS");
+  return !(e && e[0] == '0');
+}();
+
+namespace {
+RV Pack(const Result& r) {
+  return {r.v.sig, uint64_t(r.v.se) | uint64_t(r.flags) << 16 | uint64_t(r.up) << 32};
+}
+SV Pack(const Stored& r) { return {r.bits, uint64_t(r.flags) | uint64_t(r.up) << 16}; }
+RV Loaded(F80 v, bool denormal) {  // as LoadConverted
+  uint16_t flags = 0;
+  if (IsSNaN(v)) {
+    flags = kIE;
+    v = Quiet(v);
+  } else if (denormal) {
+    flags = kDE;
+  }
+  return {v.sig, uint64_t(v.se) | uint64_t(flags) << 16};
+}
+uint32_t Compared(F80 a, F80 b, bool quiet, bool b_denormal) {
+  uint16_t flags = 0;
+  uint16_t cc = CompareCC(a, b, quiet, b_denormal, &flags);
+  return cc | uint32_t(flags & (kExceptionMask | kSF)) << 16;
+}
+}  // namespace
+
+// Fast24 first, before the general dispatch: in the game nearly every
+// run operation is a PC=24, round-to-nearest add/sub/mul of 24-bit values.
+X87_INLINE bool Try24(uint32_t cw, Op op, F80 dst, F80 src, RV* out) {
+  return (cw & 0x0300) == 0 && Fast24Op(int(cw >> 10) & 3, op, ToV(dst), ToV(src), out);
+}
+
+RV Arith(uint32_t cw, Op op, V dv, V sv) {
+  F80 dst = ToF80(dv), src = ToF80(sv);
+  RV r;
+  if (!g_softfloat_only && Try24(cw, op, dst, src, &r)) return r;
+  return Pack(DoOp(cw, op, dst, src, false));
+}
+RV ArithF32(uint32_t cw, Op op, V sv, uint32_t bits) {
+  F80 st0 = ToF80(sv);
+  uint32_t e = (bits >> 23) & 0xFF;
+  if (e - 1 < 254 && !g_softfloat_only) {  // normal m32: exact, no DE
+    F80 v{(uint64_t(bits & 0x7FFFFF) | 0x800000) << 40,
+          uint16_t((bits >> 31) << 15 | (e - 127 + 0x3FFF))};
+    RV r;
+    if (Try24(cw, op, st0, v, &r)) return r;
+  }
+  bool den;
+  F80 v = ::ds1::x87::FromF32(bits, &den);
+  return Pack(DoOp(cw, op, st0, v, den));
+}
+RV ArithF64(uint32_t cw, Op op, V sv, uint64_t bits) {
+  F80 st0 = ToF80(sv);
+  bool den;
+  F80 v = ::ds1::x87::FromF64(bits, &den);
+  return Pack(DoOp(cw, op, st0, v, den));
+}
+RV ArithI16(uint32_t cw, Op op, V sv, int16_t v) {
+  return Pack(DoOp(cw, op, ToF80(sv), ::ds1::x87::FromInt(v), false));
+}
+RV ArithI32(uint32_t cw, Op op, V sv, int32_t v) {
+  return Pack(DoOp(cw, op, ToF80(sv), ::ds1::x87::FromInt(v), false));
+}
+RV Sqrt(uint32_t cw, V v) { return Pack(SqrtOf(cw, ToF80(v))); }
+
+RV LoadF32(uint32_t bits) {
+  bool den;
+  F80 v = ::ds1::x87::FromF32(bits, &den);
+  return Loaded(v, den);
+}
+RV LoadF64(uint64_t bits) {
+  bool den;
+  F80 v = ::ds1::x87::FromF64(bits, &den);
+  return Loaded(v, den);
+}
+V FromInt(int64_t v) { return ToV(::ds1::x87::FromInt(v)); }
+V ConstValue(uint32_t cw, Const k) { return ToV(ConstOf(cw, k)); }
+
+SV StoreF32(uint32_t cw, V v) { return Pack(StoreFloat(cw, ToF80(v), true)); }
+SV StoreF64(uint32_t cw, V v) { return Pack(StoreFloat(cw, ToF80(v), false)); }
+SV StoreI16(uint32_t cw, V v) { return Pack(StoreIntValue(cw, ToF80(v), INT16_MIN, INT16_MAX)); }
+SV StoreI32(uint32_t cw, V v) { return Pack(StoreIntValue(cw, ToF80(v), INT32_MIN, INT32_MAX)); }
+SV StoreI64(uint32_t cw, V v) { return Pack(StoreIntValue(cw, ToF80(v), INT64_MIN, INT64_MAX)); }
+
+uint32_t Compare(V a, V b, bool quiet) { return Compared(ToF80(a), ToF80(b), quiet, false); }
+uint32_t CompareF32(V av, uint32_t bits) {
+  F80 a = ToF80(av);
+  bool den;
+  F80 v = ::ds1::x87::FromF32(bits, &den);
+  return Compared(a, v, false, den);
+}
+uint32_t CompareF64(V av, uint64_t bits) {
+  F80 a = ToF80(av);
+  bool den;
+  F80 v = ::ds1::x87::FromF64(bits, &den);
+  return Compared(a, v, false, den);
+}
+
+}  // namespace run
 
 }  // namespace ds1::x87

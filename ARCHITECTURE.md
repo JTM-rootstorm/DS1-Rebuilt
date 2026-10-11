@@ -173,10 +173,51 @@ portable C, so it works on ARM64 where `long double` is only 64 bits).
 SoftFloat has no transcendentals: fsin, fcos, fsincos, fptan, fpatan,
 fyl2x, fyl2xp1, f2xm1 and fscale need our own extF80 implementations
 (reference: Bochs' x87 code, LGPL, which also models the hardware's
-66-bit-pi argument reduction for fsin/fcos). Correctness first;
-a fast path (host float/double ops with the host rounding mode set,
-used only where it is provably identical) can come later, gated by the
-differential tests.
+66-bit-pi argument reduction for fsin/fcos).
+
+Fast paths are integer-only (no host FPU) and provably identical to the
+SoftFloat path they bypass, which stays the reference
+(tests/x87_fast_test compares them; x87_test and lift_x87_test compare
+against the hardware):
+- add/sub/mul/div of normal or zero operands: exact 128-bit result,
+  rounded by the model's RoundPack;
+- PC=24 add/sub/mul of two 24-bit significands (the game's case, any
+  RC): exact in 64 bits (`run::Fast24`, shared with lifted runs);
+- FST m32/m64 of values that stay normal;
+- fsin/fcos/fsincos: series in 128-bit fixed point, used only when the
+  result is further than 2^-100 from any rounding boundary.
+
+### x87 runs (lifter)
+Calling the model per instruction made every instruction a serial
+read-modify-write of TOP, the tag word and the status word in memory,
+and the game runs millions of x87 instructions per frame (CPU skinning,
+particles). The lifter therefore turns straight-line x87 code into runs:
+- A run is a stretch of one basic block (no labels inside, no calls or
+  branches; other instructions may be interleaved) with at least three
+  x87 instructions, all of a supported subset (loads, stores, the
+  arithmetic forms, fxch, fchs, fabs, fsqrt, fcom family, ftst, fnstsw).
+- A symbolic stack (X87Sim) resolves every st(i) to an entry-relative
+  slot at lift time; slots become locals (`run::V`, padding-free so they
+  stay in registers), fxch and fld st(i) become copies.
+- One guard at the start (`run::Guard`): all exceptions masked, every
+  slot the run reads before writing is non-empty and every slot it
+  pushes into is empty. Then no instruction of the run can fault, so
+  the value-level `run::` functions (the same code the State-based
+  operations use) give exactly the per-instruction results; sticky flags,
+  C1 and C3/C2/C0 are tracked in locals; fnstsw inside a run builds the
+  status word from them.
+- At the end the registers, tags, TOP and status word are written back.
+  If the guard fails the original per-instruction code runs instead
+  (it is emitted in the else branch).
+- Common PC=24 operations, m32 loads and exact m32 stores are inlined
+  into the lifted code; the rest are calls.
+- DS1_X87_RUNS=0 disables runs at run time (A/B checks).
+- Known difference from hardware, the same one lifted integer registers
+  already have: while a run is in flight its state is in locals, so a
+  guest exception raised inside it (an access violation handled by an
+  SEH filter) sees the FPU state from the start of the run in its
+  CONTEXT, and an __except unwind out of the run drops the run's
+  changes. Neither happens in the game's x87 code paths in practice.
 
 ### Graphics: D3D7 HLE over a RenderDevice interface
 The game is DirectDraw 7 + Direct3D 7 fixed-function (TnL, texture

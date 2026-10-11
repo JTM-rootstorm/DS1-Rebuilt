@@ -93,6 +93,17 @@ M4 findings:
   protector in ds1_x87. tests/x87_fast_test checks the fast paths against
   SoftFloat (portable; 4M cases, mutation-checked); x87_test and lift_x87
   still pass against the hardware.
+- Forest past the farm (the user's save, rain, many skinned models):
+  27.7 -> 16.7 ms/frame (the game's 60 fps cap) with lifter x87 runs
+  (ARCHITECTURE.md "x87 runs"): 6887 runs; the register stack in
+  locals, one guard per run, write-back at the end. The rest of the win
+  came from (1) passing values as two full 64-bit fields (F80's padded
+  half was assembled in memory around every call: store-forwarding
+  stalls), (2) the game's mode being PC=24 with RC=chop, not nearest (a
+  first fast path for nearest only never triggered), and (3) forcing
+  the PC=24 fast path inline. lift_x87_test now also runs 4000 random
+  sequences of the EXE's x87 forms as blocks against the CPU; about half
+  of the trials take the run path; mutation-checked.
 - fsin/fcos/fsincos: the series now runs in 128-bit fixed point; the
   result is used only when it lies more than 2^-100 from every rounding
   boundary (both methods' errors are far below that), else the binary128

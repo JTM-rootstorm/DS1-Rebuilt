@@ -132,6 +132,215 @@ void Free(State& s, int i);     // FFREE st(i)
 void IncStp(State& s);
 void DecStp(State& s);
 
+// --- value-level operations for lifted x87 runs ----------------------
+//
+// The lifter turns straight-line stretches of x87 code ("runs") into code
+// that keeps the register stack in locals: one guard at the start checks
+// that no instruction in the run can fault (every register it reads is
+// valid, every slot it pushes into is empty, all exceptions masked), and
+// the state is written back once at the end. The run calls these pure
+// functions, which compute exactly what the State-based operations above
+// do for the same operands (those are built on them). See ARCHITECTURE.md
+// "x87 runs".
+namespace run {
+
+// Lifted runs are used when true (DS1_X87_RUNS=0 disables them, for A/B).
+extern bool g_enabled;
+
+// A register value in a run: F80 without padding (two full 64-bit fields),
+// so it travels between calls in registers; passing F80 itself makes
+// compilers assemble its padded half in memory (store-forwarding stalls).
+struct V {
+  uint64_t sig;
+  uint64_t se;  // sign/exponent in bits 0-15, the rest zero
+};
+inline V ToV(F80 f) { return {f.sig, f.se}; }
+inline F80 ToF80(V v) { return {v.sig, static_cast<uint16_t>(v.se)}; }
+
+// A register result: value, exception flags and C1 (rounded up), packed
+// so it comes back in two registers.
+struct RV {
+  uint64_t sig;
+  uint64_t meta;  // bits 0-15 sign/exponent, 16-31 flags, 32 up
+};
+inline V Val(RV r) { return {r.sig, r.meta & 0xFFFF}; }
+inline uint32_t Flags(RV r) { return static_cast<uint32_t>(r.meta >> 16) & 0xFFFF; }
+inline bool Up(RV r) { return (r.meta >> 32) & 1; }
+
+// A memory result: stored bits, flags, C1.
+struct SV {
+  uint64_t bits;
+  uint64_t meta;  // bits 0-15 flags, 16 up
+};
+inline uint32_t Flags(SV r) { return static_cast<uint32_t>(r.meta) & 0xFFFF; }
+inline bool Up(SV r) { return (r.meta >> 16) & 1; }
+
+// dst op src (Intel operand order; dst is the register written).
+RV Arith(uint32_t cw, Op op, V dst, V src);
+RV ArithF32(uint32_t cw, Op op, V st0, uint32_t bits);
+RV ArithF64(uint32_t cw, Op op, V st0, uint64_t bits);
+RV ArithI16(uint32_t cw, Op op, V st0, int16_t v);
+RV ArithI32(uint32_t cw, Op op, V st0, int32_t v);
+RV Sqrt(uint32_t cw, V v);
+
+// FLD m32/m64: the value pushed (SNaN quieted) and IE/DE.
+RV LoadF32(uint32_t bits);
+RV LoadF64(uint64_t bits);
+V FromInt(int64_t v);                // FILD (exact)
+V ConstValue(uint32_t cw, Const k);    // FLD1/FLDZ/FLDPI/...
+
+SV StoreF32(uint32_t cw, V v);
+SV StoreF64(uint32_t cw, V v);
+SV StoreI16(uint32_t cw, V v);  // bits = the integer stored
+SV StoreI32(uint32_t cw, V v);
+SV StoreI64(uint32_t cw, V v);
+
+// FCOM family: C3/C2/C0 (status word positions) | flags << 16.
+uint32_t Compare(V a, V b, bool quiet);
+uint32_t CompareF32(V a, uint32_t bits);
+uint32_t CompareF64(V a, uint64_t bits);
+
+// --- inline fast paths (the game's common case) ---
+//
+// D3D leaves the FPU at PC=24 (the game runs it with RC=chop), and m32
+// loads and PC=24 results have 24-bit significands, so most run operations
+// are add, sub or mul of two such normal values. Those are exact in 64-bit
+// integers; rounding to 24 bits with RC `rc` is done here as RoundPack does
+// it. This core is
+// also the model's own fast path (x87.cpp, Fast24), so lifted code and the
+// State operations cannot disagree. Anything else (other modes, specials,
+// results leaving the normal range, division) returns false.
+// Forced inline: compilers otherwise keep these out of line in the big
+// lifted functions, which costs most of the gain.
+enum class F24Op { Add, Sub, Mul };  // Sub: a - b
+[[gnu::always_inline]] inline bool Fast24(F24Op op, int rc, V a, V b, RV* out) {
+  constexpr uint64_t kLow40 = (1ull << 40) - 1, kJ = 1ull << 63;
+  uint32_t ea = a.se & 0x7FFFu, eb = b.se & 0x7FFFu;
+  if (((a.sig | b.sig) & kLow40) || !(a.sig & b.sig & kJ) || ea - 1 >= 0x7FFEu ||
+      eb - 1 >= 0x7FFEu)
+    return false;
+  bool sa = (a.se & 0x8000u) != 0, sb = (b.se & 0x8000u) != 0, sign;
+  uint64_t ma = a.sig >> 40, mb = b.sig >> 40, v;  // [2^23, 2^24)
+  int32_t exp;
+  if (op == F24Op::Mul) {
+    v = ma * mb;  // value = v / 2^46 * 2^(ea + eb - 2 * 0x3FFF)
+    sign = sa != sb;
+    int lz = __builtin_clzll(v);
+    v <<= lz;
+    exp = int32_t(ea + eb) - 0x3FFF + 17 - lz;
+  } else {
+    bool sbx = op == F24Op::Sub ? !sb : sb;
+    bool swap = eb > ea || (eb == ea && mb > ma);
+    uint64_t mx = swap ? mb : ma, my = swap ? ma : mb;
+    int32_t ex = int32_t(swap ? eb : ea), d = ex - int32_t(swap ? ea : eb);
+    sign = swap ? sbx : sa;
+    if (d > 39) return false;
+    uint64_t x = mx << 39, y = (my << 39) >> d;  // exact: value = . / 2^62
+    v = sa != sbx ? x - y : x + y;
+    if (!v) {  // exact zero: -0 when rounding down, else +0
+      *out = {0, rc == 1 ? 0x8000u : 0u};
+      return true;
+    }
+    int lz = __builtin_clzll(v);
+    v <<= lz;
+    exp = ex + 1 - lz;
+  }
+  uint64_t keep = v >> 40, rest = v & kLow40;
+  bool inc = rc == 0 ? rest > (1ull << 39) || (rest == (1ull << 39) && (keep & 1))
+           : rc == 1 ? sign && rest
+           : rc == 2 ? !sign && rest
+                     : false;
+  if (inc && ++keep == (1ull << 24)) {
+    keep >>= 1;
+    ++exp;
+  }
+  if (exp < 1 || exp > 0x7FFE) return false;
+  *out = {keep << 40, uint64_t(sign ? 0x8000u : 0u) | uint64_t(exp) |
+                          (rest ? uint64_t(0x20) << 16 : 0) | uint64_t(inc) << 32};
+  return true;
+}
+
+[[gnu::always_inline]] inline bool Fast24Op(int rc, Op op, V dst, V src, RV* out) {
+  switch (op) {
+    case Op::Add: return Fast24(F24Op::Add, rc, dst, src, out);
+    case Op::Mul: return Fast24(F24Op::Mul, rc, dst, src, out);
+    case Op::Sub: return Fast24(F24Op::Sub, rc, dst, src, out);
+    case Op::SubR: return Fast24(F24Op::Sub, rc, src, dst, out);
+    default: return false;
+  }
+}
+
+// What lifted runs call: the fast path inline, the rest out of line.
+[[gnu::always_inline]] inline RV ArithFast(uint32_t cw, Op op, V dst, V src) {
+  RV r;
+  if ((cw & 0x0300) == 0 && Fast24Op(int(cw >> 10) & 3, op, dst, src, &r)) return r;
+  return Arith(cw, op, dst, src);
+}
+[[gnu::always_inline]] inline RV ArithF32Fast(uint32_t cw, Op op, V st0, uint32_t bits) {
+  uint32_t e = (bits >> 23) & 0xFF;
+  if ((cw & 0x0300) == 0 && e - 1 < 254) {  // PC=24, normal m32 (exact, no DE)
+    V m{(uint64_t(bits & 0x7FFFFF) | 0x800000) << 40, ((bits >> 31) << 15) | (e - 127 + 0x3FFF)};
+    RV r;
+    if (Fast24Op(int(cw >> 10) & 3, op, st0, m, &r)) return r;
+  }
+  return ArithF32(cw, op, st0, bits);
+}
+[[gnu::always_inline]] inline RV LoadF32Fast(uint32_t bits) {
+  uint32_t e = (bits >> 23) & 0xFF;
+  if (e - 1 < 254)
+    return {(uint64_t(bits & 0x7FFFFF) | 0x800000) << 40,
+            uint64_t(((bits >> 31) << 15) | (e - 127 + 0x3FFF))};
+  return LoadF32(bits);
+}
+// FST m32 of a normal value with a 24-bit significand in the m32 range:
+// exact (no flags, C1 = 0).
+[[gnu::always_inline]] inline SV StoreF32Fast(uint32_t cw, V v) {
+  int32_t e = int32_t(v.se & 0x7FFF) - 0x3FFF + 127;
+  if (!(v.sig & ((1ull << 40) - 1)) && (v.sig >> 63) && e >= 1 && e <= 254)
+    return {((v.se & 0x8000u) ? 0x80000000ull : 0) | uint64_t(e) << 23 |
+                ((v.sig >> 40) & 0x7FFFFF),
+            0};
+  return StoreF32(cw, v);
+}
+
+// Tag of a non-empty register: 00 valid, 01 zero, 10 special.
+inline uint32_t Tag(V v) {
+  uint32_t e = v.se & 0x7FFFu;
+  if (e == 0) return v.sig ? 2 : 1;
+  if (e == 0x7FFF || !(v.sig >> 63)) return 2;
+  return 0;
+}
+
+// Bit p set when physical register p is empty (tag 11).
+inline uint32_t EmptyMask(uint32_t tw) {
+  uint32_t x = tw & (tw >> 1) & 0x5555u;
+  x = (x | (x >> 1)) & 0x3333u;
+  x = (x | (x >> 2)) & 0x0F0Fu;
+  return (x | (x >> 4)) & 0x00FFu;
+}
+
+// The run guard. `valid`/`empty` are entry-relative masks (bit k for
+// st(k) at entry, slots below the top as k & 7): registers the run reads
+// before writing, and slots it pushes into.
+inline bool Guard(const State& s, uint32_t valid, uint32_t empty) {
+  if (!g_enabled || (s.cw & 0x3F) != 0x3F) return false;
+  uint32_t t = s.top;
+  uint32_t e = EmptyMask(s.tw);
+  uint32_t v = ((valid << t) | (valid >> (8 - t))) & 0xFF;
+  uint32_t m = ((empty << t) | (empty >> (8 - t))) & 0xFF;
+  return (e & v) == 0 && (e & m) == m;
+}
+
+// The status word FNSTSW reports for sticky `sw` (C bits included), TOP
+// `top`, under control word `cw` (as StatusWord()).
+inline uint16_t StatusWordOf(uint32_t sw, uint32_t top, uint32_t cw) {
+  uint32_t r = (sw & ~0xB880u) | (top << 11);  // drop TOP, ES, B
+  if (sw & ~cw & 0x3F) r |= 0x8080;
+  return static_cast<uint16_t>(r);
+}
+
+}  // namespace run
+
 // --- environment (32-bit protected-mode formats) ---------------------
 void StoreEnv(State& s, uint8_t out[28]);       // FNSTENV, then masks all
 void LoadEnv(State& s, const uint8_t in[28]);   // FLDENV

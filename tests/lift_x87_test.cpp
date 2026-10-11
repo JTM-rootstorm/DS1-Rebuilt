@@ -171,8 +171,19 @@ uint64_t Ulps(const uint8_t* a, const uint8_t* b) {
   std::memcpy(&sb, b, 8);
   std::memcpy(&ea, a + 8, 2);
   std::memcpy(&eb, b + 8, 2);
-  if (ea != eb) return ~0ull;
-  return sa > sb ? sa - sb : sb - sa;
+  if ((ea ^ eb) & 0x8000) return ~0ull;  // different signs
+  // (exponent, significand) is monotonic for normal values, so a result
+  // one ulp below a power of two counts as 1 ulp from it.
+  auto key = [](uint16_t e, uint64_t s) {
+    return (static_cast<unsigned __int128>(e & 0x7FFF) << 63) | (s & ~(1ull << 63));
+  };
+  if (!(sa >> 63) || !(sb >> 63)) {  // denormals/zeros: same exponent only
+    if (ea != eb) return ~0ull;
+    return sa > sb ? sa - sb : sb - sa;
+  }
+  unsigned __int128 ka = key(ea, sa), kb = key(eb, sb);
+  unsigned __int128 d = ka > kb ? ka - kb : kb - ka;
+  return d > ~0ull ? ~0ull : static_cast<uint64_t>(d);
 }
 
 }  // namespace
@@ -197,7 +208,7 @@ int main(int argc, char** argv) {
     NativeFn native = MakeNative(page, f);
     bool transc = IsTranscendental(text);
     bool flags = text.find("comi") != std::string::npos;
-    bool ax = text.rfind("fnstsw ax", 0) == 0;
+    bool ax = text.find("fnstsw ax") != std::string::npos;
     int fails = 0;
     for (int t = 0; t < trials; t++) {
       uint8_t in[108], hw[108], lf[108], m0[16];

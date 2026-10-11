@@ -29,3 +29,9 @@ probe 005AFE60 Go::PlaySound
 probe 005C8C69 GoConversation::RSActivateDialogue
 probe 005C8E17 GoConversation::RCActivateDialogue
 probe 0062EE57 GPGSound::PlayStream
+# Movement investigation (hero does not move after the intro).
+probe 005D593A GoMind::RSMove
+probe 005D566E GoMind::JobRecentlyFailedToPathTo
+probe 0057C4BC WorldTerrain::IsNodalPathingConnected
+probe 005FAE2E GoFollower::RCSendPackedUpdateToFollowers
+probe 005FB584 GoFollower::RCSendPackedPositionUpdateToFollowers

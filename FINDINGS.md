@@ -76,6 +76,13 @@ M4 findings:
   the same thing). The game calls it ~3.7M times in two minutes of play
   to place objects and bones. DS1_CHECK_INDICES=1 checks indexed draws
   against their vertex counts (clean).
+- Hero could not move, farmer silent (fixed): our UnDecorateSymbolName
+  differed from Microsoft's on 949 of 3230 exports ("X **" vs "X * *",
+  ") const" vs ")const ", "*const __thiscall" on returned const
+  pointers). FuBi parses these strings to register functions for Skrit,
+  so jobs (move, conversations) failed silently. Now byte-identical to
+  the game's own dbghelp.dll (tools/undname). Dialogue "conversation_
+  norick" plays s_v_fh_norick1 with subtitles; the hero moves.
 - Automated runs: DS1_BACKGROUND ignores the desktop's real input;
   DS1_TEST_INPUT=<file> scripts input (goto/move/pointer/click/key);
   run.sh-style runs use their own XDG_DATA_HOME profile. Arguments after

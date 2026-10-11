@@ -71,12 +71,31 @@ std::string UndnameMsvc(const std::string& mangled, uint32_t flags) {
     // "__cdecl *)" -> "__cdecl*)": calling convention bound to a pointer.
     if (ch == ' ' && i + 1 < s.size() && s[i + 1] == '*' && after_callconv())
       continue;
-    // undname always separates a pointer/reference from its type: "X *".
+    // undname always separates a pointer/reference from its type: "X *",
+    // and stacked indirections from each other: "X * *", "X * &".
     if ((ch == '*' || ch == '&') && !r.empty() &&
-        (std::isalnum(uint8_t(r.back())) || r.back() == '_' || r.back() == '>') &&
+        (std::isalnum(uint8_t(r.back())) || r.back() == '_' || r.back() == '>' ||
+         r.back() == '*') &&
         !after_callconv())
       r += ' ';
     r += ch;
+  }
+  // A top-level const on a returned pointer is not printed:
+  // "Goid_ const *const __thiscall" -> "Goid_ const * __thiscall".
+  for (const char* cc : {"__cdecl", "__stdcall", "__thiscall", "__fastcall"}) {
+    std::string from = std::string("*const ") + cc, to = std::string("* ") + cc;
+    size_t at = r.find(from);
+    if (at != std::string::npos) r.replace(at, from.size(), to);
+  }
+  // Member function qualifiers follow the parameter list without a space
+  // and with a trailing one: "f(void)const ".
+  for (const char* q : {" const volatile", " const", " volatile"}) {
+    std::string tail = std::string(")") + q;
+    if (r.size() >= tail.size() && r.compare(r.size() - tail.size(), tail.size(), tail) == 0) {
+      r.resize(r.size() - tail.size());
+      r += std::string(")") + (q + 1) + " ";
+      break;
+    }
   }
   return r;
 }

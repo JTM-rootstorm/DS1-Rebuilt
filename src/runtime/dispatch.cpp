@@ -172,6 +172,12 @@ uint64_t Rdtsc(Ctx& c) {
           .count());
 }
 
+void Probe(Ctx& c, uint32_t va, const char* name) {
+  std::fprintf(stderr, "probe: %s (%08X) entered, args %08X %08X %08X %08X\n",
+               name, va, Rd32(c.esp + 4), Rd32(c.esp + 8), Rd32(c.esp + 12),
+               Rd32(c.esp + 16));
+}
+
 void X87Check(Ctx& c, uint32_t va) {
   if (c.fpu.unmasked_fault)
     FatalF("unmasked x87 exception at %08X (sw=%04X cw=%04X)", va,

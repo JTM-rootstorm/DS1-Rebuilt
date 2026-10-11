@@ -1017,6 +1017,10 @@ void Emitter::EmitFunction(const Function& f, std::string* out,
   auto nm = p_.names.find(f.entry);
   o += "// " + (nm != p_.names.end() ? nm->second : FnName(f.entry)) + "\n";
   o += "void " + FnName(f.entry) + "(::ds1::Ctx& c) {\n  LIFT_ENTER\n";
+  auto pr = p_.probes.find(f.entry);
+  if (pr != p_.probes.end())
+    o += Fmt("  LIFT_SPILL; ::ds1::Probe(c, 0x%Xu, \"%s\"); LIFT_RELOAD;\n",
+             f.entry, pr->second.c_str());
 
   // Labels: branch targets plus non-contiguous fallthroughs.
   std::set<uint32_t> labels = f.labels;

@@ -36,6 +36,7 @@ void RaiseDivideError(Ctx& c, uint32_t va);    // #DE from div/idiv
 void Cpuid(Ctx& c);                            // eax/ecx in, eax..edx out
 uint64_t Rdtsc(Ctx& c);
 void X87Check(Ctx& c, uint32_t va);            // after unmasked FPU faults
+void Probe(Ctx& c, uint32_t va, const char* name);  // manifest probes
 
 namespace lift {
 

@@ -17,6 +17,15 @@ ARCHITECTURE.md.
 ## Build
 - `cmake --preset debug && cmake --build --preset debug`
   (release: `--preset release`). Output in out/build/<preset>/.
+- Lifting is a separate step; re-run it after any change to tools/lifter,
+  symbols/ or the EXE, then re-run cmake (the generated file list is
+  globbed):
+  `out/build/debug/tools/lifter/ds1_lift --exe "/home/mike/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
+  It only rewrites files whose content changed. generated/lift_report.txt
+  lists unimplemented instructions and warnings.
+- Inspect one function's decode + C++: `ds1_lift --exe ... --dump <hexva>`.
+- Run: `out/build/debug/ds1 --game-dir "/home/mike/Games/Heroic/Dungeon Siege"`
+  (DS1_TRACE=1 logs every HLE call).
 - Rebuild dxvk-native (only if tools_ext/dxvk changes):
   `ninja -C ../tools_ext/dxvk/build-native install`
 
@@ -58,4 +67,10 @@ ARCHITECTURE.md.
   and the headless ExportFunctions.java run (command in its header).
 - No game assets, memory dumps, extracted tank contents or symbol dumps in
   git. Lifted code is generated and gitignored too.
+- Every import needs an explicit HLE handler (src/runtime/hle/); an
+  unhandled one is fatal by design. No catch-all stubs that return 0.
+- HLE handlers take arguments with Arg(c, i) and return EAX; declare the
+  stdcall argument count correctly in HLE(...) or the guest stack breaks.
+- lifted.h semantics changes must keep tests/lift_semantics_test.cpp
+  passing (bit-exact against the host CPU).
 - Record findings in FINDINGS.md, not here.

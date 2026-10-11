@@ -24,9 +24,13 @@ struct Program {
   std::set<uint32_t> noreturn;                // functions that never return
   std::map<uint32_t, std::vector<uint32_t>> jumptables;  // jmp va -> targets
   std::set<uint32_t> noreturn_iat;            // IAT slots of ExitProcess etc.
+  std::map<uint32_t, std::string> probes;     // manifest: probe on entry
 
   bool Load(const std::string& exe, const std::string& symdir,
             std::string* err);
+
+  // Applies lifter.manifest (entry/name/probe lines).
+  bool LoadManifest(const std::string& path, std::string* err);
 
   bool InText(uint32_t va) const { return va >= text_lo && va < text_hi; }
   const uint8_t* Bytes(uint32_t va) const { return mem.ptr<uint8_t>(va); }

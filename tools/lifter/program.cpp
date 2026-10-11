@@ -94,4 +94,41 @@ bool Program::Load(const std::string& exe, const std::string& symdir,
   return true;
 }
 
+bool Program::LoadManifest(const std::string& path, std::string* err) {
+  std::ifstream f(path);
+  if (!f) {
+    *err = "cannot open " + path;
+    return false;
+  }
+  std::string line;
+  int no = 0;
+  while (std::getline(f, line)) {
+    no++;
+    size_t hash = line.find('#');
+    if (hash != std::string::npos) line.resize(hash);
+    std::istringstream in(line);
+    std::string kind, va_s, name;
+    if (!(in >> kind)) continue;
+    if (!(in >> va_s)) {
+      *err = path + ":" + std::to_string(no) + ": missing address";
+      return false;
+    }
+    std::getline(in >> std::ws, name);
+    uint32_t va = Hex(va_s);
+    if (kind == "entry") {
+      entries.insert(va);
+      if (!name.empty()) names[va] = name;
+    } else if (kind == "name") {
+      names[va] = name;
+    } else if (kind == "probe") {
+      entries.insert(va);
+      probes[va] = name.empty() ? "probe" : name;
+    } else {
+      *err = path + ":" + std::to_string(no) + ": unknown directive " + kind;
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace lifter

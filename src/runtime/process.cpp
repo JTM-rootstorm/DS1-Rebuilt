@@ -2,6 +2,8 @@
 // host threads that run guest code.
 
 #include <pthread.h>
+#include <sys/mman.h>
+#include <ucontext.h>
 
 #include <cstring>
 #include <map>
@@ -178,6 +180,33 @@ uint32_t StartHostThread(Thread* t, uint32_t entry,
   return r;
 }
 
+// The guest main thread runs on the process main thread (SDL, and Cocoa on
+// macOS, require UI calls there) but on a big private stack, switched to
+// with makecontext/swapcontext.
+namespace {
+ucontext_t g_host_main_ctx, g_guest_main_ctx;
+HostThreadStart* g_main_start = nullptr;
+
+void GuestMainTrampoline() { HostThreadMain(g_main_start); }
+}  // namespace
+
+static uint32_t RunOnMainThread(Thread* t, uint32_t entry) {
+  void* stack = mmap(nullptr, kHostStack, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (stack == MAP_FAILED) FatalF("cannot allocate the main guest stack");
+  g_main_start = new HostThreadStart{t, entry, {}};
+  getcontext(&g_guest_main_ctx);
+  g_guest_main_ctx.uc_stack.ss_sp = stack;
+  g_guest_main_ctx.uc_stack.ss_size = kHostStack;
+  g_guest_main_ctx.uc_link = &g_host_main_ctx;  // resume here on return
+  makecontext(&g_guest_main_ctx, GuestMainTrampoline, 0);
+  swapcontext(&g_host_main_ctx, &g_guest_main_ctx);
+  uint32_t r = g_main_start->exit_code;
+  delete g_main_start;
+  munmap(stack, kHostStack);
+  return r;
+}
+
 int RunProcess(const std::string& exe_path, const std::string& game_dir) {
   g_proc = new Process;
   Process& p = *g_proc;
@@ -209,8 +238,7 @@ int RunProcess(const std::string& exe_path, const std::string& game_dir) {
   hle::BindImports();
 
   Thread* main = CreateGuestThread(p.img.stack_reserve);
-  int code = int(StartHostThread(main, p.img.entry, {}, true));
-  return code;
+  return int(RunOnMainThread(main, p.img.entry));
 }
 
 }  // namespace ds1

@@ -1,7 +1,7 @@
 // ds1_lift: lifts DungeonSiege.exe to C++.
 //
 //   ds1_lift --exe <DungeonSiege.exe> --symbols symbols --out generated
-//            [--insns-per-file N] [--dump VA]
+//            [--manifest lifter.manifest] [--insns-per-file N] [--dump VA]
 //
 // Pass 1 discovers functions to a fixpoint (Ghidra entries + exports +
 // every direct call/tail-call target found while descending). Pass 2
@@ -66,7 +66,8 @@ const char* kFilePrologue =
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string exe, symdir = "symbols", outdir = "generated";
+  std::string exe, symdir = "symbols", outdir = "generated",
+              manifest = "lifter.manifest";
   uint64_t per_file = 12000;
   uint32_t dump = 0;
   for (int i = 1; i < argc; i++) {
@@ -75,6 +76,7 @@ int main(int argc, char** argv) {
     if (a == "--exe") exe = val();
     else if (a == "--symbols") symdir = val();
     else if (a == "--out") outdir = val();
+    else if (a == "--manifest") manifest = val();
     else if (a == "--insns-per-file") per_file = std::stoull(val());
     else if (a == "--dump") dump = std::stoul(val(), nullptr, 16);
     else {
@@ -92,6 +94,10 @@ int main(int argc, char** argv) {
   std::string err;
   if (!p.Load(exe, symdir, &err)) {
     std::fprintf(stderr, "load: %s\n", err.c_str());
+    return 1;
+  }
+  if (!manifest.empty() && !p.LoadManifest(manifest, &err)) {
+    std::fprintf(stderr, "manifest: %s\n", err.c_str());
     return 1;
   }
   lifter::Decoder dec;

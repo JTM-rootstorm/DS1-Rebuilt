@@ -1,20 +1,59 @@
 # Findings
 
 ## Status (2026-10-10)
-Groundwork only; git repo initialised (main). Design constraints added
-after review: full 80-bit x87 model, 64-bit host only, no emulation or
-Wine in the product, macOS arm64 + Metal later (see ARCHITECTURE.md).
-Done:
-- Binary survey (below), Ghidra project imported + auto-analysed (65 s).
-- symbols/: exports.tsv (3230 demangled FuBi functions), imports.tsv,
-  functions.tsv (Ghidra: 27660 functions, 405 multi-chunk, 33 thunks),
-  pe_info.txt.
-- dxvk-native v3.1.1 built (d3d9 + SDL3) and verified: d3d9_smoke presents
-  120 frames on the RTX 4080 (NVIDIA 615.78.8).
-- Runtime skeleton: 4 GiB guest arena + PE mapper + import thunks;
-  ds1_loader_probe maps the EXE cleanly.
+M0 and M1 done: the recompiled binary runs the VC6 CRT startup and every
+static constructor natively and reaches WinMain (004023DD, probe fires
+with hInstance 00400000, nShow 10). Next stop: user32!SetWindowsHookExA
+from 00414193 inside the app setup (M2: windows, hooks, message loop,
+SEH).
+- ds1_lift: 31292 functions (27660 Ghidra/exports + 3632 from code
+  immediates and .rdata/.data pointer scans), 1.17M instructions, 98 C++
+  files (~125 MB), -O2 build in ~30-40 s on 16 cores. 151 "unimplemented"
+  sites are all in data that merely decodes (aaa/aam/far calls) and never
+  runs.
+- Tests (ctest): lift_semantics (12.4M integer/flag checks, bit-exact vs
+  host CPU) and x87 (6.9M cases: bit-exact for everything but the
+  transcendentals, which are within 1 ulp). Both pass.
+- Runtime: guest main thread runs on the process main thread on a 256 MB
+  makecontext stack (SDL/Cocoa need the main thread).
+- HLE so far: kernel32 (CRT startup, memory, heaps, TLS, sync, threads,
+  files, mappings, locale, time), advapi32 registry (seeded EXE Path),
+  version.dll (real VS_VERSION_INFO), ole32 basics, user32 keyboard/
+  metrics/wsprintfA.
 
-Next: milestone M1 in ARCHITECTURE.md (lifter MVP, reach WinMain).
+## x87 model notes
+- SoftFloat 3e pinned at 5c06db33 (3e + doc fixes, before BF16, which
+  only builds for 8086-SSE). `8086` specialization. Gotchas fixed in
+  cmake/softfloat.cmake: upstream C99 `INLINE` emits no out-of-line
+  bodies (link errors at -O0) -> `static inline`; softfloat_types.h field
+  order depends on LITTLEENDIAN, so the target exports LITTLEENDIAN=1,
+  SOFTFLOAT_FAST_INT64 and THREAD_LOCAL publicly.
+- Oracle is the host CPU, an AMD Ryzen 7 9800X3D, so where Intel is
+  undefined the model follows AMD: FFREE clears C1, FCMOV keeps it,
+  PC=01 behaves as 64-bit, FSINCOS takes C1 from the sine. Deliberate
+  deviation: FCOMI/FUCOMI clear C1 (Intel docs; AMD keeps it).
+  Unmasked underflow with an exact tiny result is not flagged.
+- Transcendentals are correctly rounded in a sampled check; the AMD host
+  itself was off by up to 0.58 ulp on fptan, so 1-ulp diffs vs host are
+  expected (0.4-8.5% of cases).
+- Cost at PC=24/chop: fadd ~19 ns, fld/fstp m32 ~10 ns, fsqrt ~24 ns,
+  fsin ~210 ns, fsincos ~390 ns. Fine for bring-up; a proven-equivalent
+  fast path can come later.
+
+## Lifter notes
+- Ghidra's 59 "unresolved" computed jumps are all `jmp [IAT]` thunks (22)
+  and vtable/register tail jumps; every real switch table (86) resolves.
+- Function pointers stored by code (`mov [esi+0x54], 0x404B60`) are not
+  Ghidra functions; the immediate/data pointer scan finds them. Treating
+  any such address as an entry is safe: code reached by jumping into an
+  entry is tail-called rather than inlined.
+- SEH plan (M2): VC6 __except_handler3 / __CxxFrameHandler finish by
+  restoring esp/ebp and `jmp`ing to a continuation inside an ancestor
+  function. Lifted, that ancestor is further up the host stack, so the
+  dispatcher must throw a host exception {target, esp, ebp} for such
+  targets and the owning lifted function (matched by its frame ebp) must
+  catch it and `goto` the label. Only functions whose scopetables /
+  FuncInfo name continuations need the wrapper.
 
 ## The binary
 - DungeonSiege.exe v1.11.1.1486 (msqa:03.07.0202), PE32 i386 GUI,

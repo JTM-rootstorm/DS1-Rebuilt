@@ -1,0 +1,11 @@
+# ds1_lift manifest: per-binary overrides for DungeonSiege.exe
+# (GOG 1.11.1.1486, SHA-256 41f14b14...938a02). Line based:
+#
+#   entry <hexva> [name]   extra function entry point
+#   name  <hexva> <name>   name a function (comments in generated code)
+#   probe <hexva> [name]   call ds1::Probe() on entry (runtime logs it)
+#
+# Addresses are guest VAs in hex, no 0x prefix needed.
+
+name  004023DD WinMain
+probe 004023DD WinMain

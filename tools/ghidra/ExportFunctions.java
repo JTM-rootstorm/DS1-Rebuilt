@@ -23,7 +23,7 @@ public class ExportFunctions extends GhidraScript {
     String out = args.length > 0 ? args[0] : "functions.tsv";
     int total = 0, multiChunk = 0, thunks = 0;
     try (PrintWriter w = new PrintWriter(out)) {
-      w.println("entry\tmin\tmax\tchunks\tthunk\tcallconv\tname");
+      w.println("entry\tmin\tmax\tchunks\tthunk\tnoreturn\tcallconv\tname");
       FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
       while (it.hasNext() && !monitor.isCancelled()) {
         Function f = it.next();
@@ -33,10 +33,11 @@ public class ExportFunctions extends GhidraScript {
         total++;
         if (chunks > 1) multiChunk++;
         if (f.isThunk()) thunks++;
-        w.printf("%08X\t%08X\t%08X\t%d\t%d\t%s\t%s%n",
+        w.printf("%08X\t%08X\t%08X\t%d\t%d\t%d\t%s\t%s%n",
             f.getEntryPoint().getOffset(), body.getMinAddress().getOffset(),
             body.getMaxAddress().getOffset(), chunks, f.isThunk() ? 1 : 0,
-            f.getCallingConventionName(), f.getName(true));
+            f.hasNoReturn() ? 1 : 0, f.getCallingConventionName(),
+            f.getName(true));
       }
     }
     println("ExportFunctions: " + total + " functions, " + multiChunk +

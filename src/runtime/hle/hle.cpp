@@ -1,0 +1,141 @@
+#include "runtime/hle/hle.h"
+
+#include <algorithm>
+#include <map>
+#include <mutex>
+#include <deque>
+#include <vector>
+
+#include "runtime/log.h"
+
+namespace ds1::hle {
+
+namespace {
+
+std::string Lower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char ch) { return std::tolower(ch); });
+  return s;
+}
+
+std::map<std::pair<std::string, std::string>, Def>& Registry() {
+  static std::map<std::pair<std::string, std::string>, Def> r;
+  return r;
+}
+
+struct Slot {
+  std::string dll, name;
+  const Def* def;  // nullptr: unimplemented
+};
+
+std::mutex g_slots_mu;
+std::deque<Slot> g_slots;  // stable refs; index = (thunk - kThunkBase) / kThunkStride
+
+// Pseudo HMODULEs for DLLs we provide. Real modules are guest pointers to
+// a PE header; nothing in the game dereferences these, so a recognisable
+// value outside the arena's used ranges is enough.
+constexpr uint32_t kModuleBase = kModuleRegion;
+const std::vector<std::string>& KnownDlls() {
+  static const std::vector<std::string> dlls = {
+      "kernel32.dll", "user32.dll",  "gdi32.dll",    "advapi32.dll",
+      "ole32.dll",    "version.dll", "winmm.dll",    "wsock32.dll",
+      "ddraw.dll",    "mss32.dll",   "binkw32.dll",  "dbghelp.dll",
+      "imm32.dll",    "shfolder.dll", "ntdll.dll"};
+  return dlls;
+}
+
+std::string NormaliseDll(std::string dll) {
+  dll = Lower(dll);
+  size_t slash = dll.find_last_of("\\/");
+  if (slash != std::string::npos) dll = dll.substr(slash + 1);
+  if (dll.find('.') == std::string::npos) dll += ".dll";
+  return dll;
+}
+
+uint32_t AddSlot(const std::string& dll, const std::string& name) {
+  std::lock_guard<std::mutex> l(g_slots_mu);
+  for (size_t i = 0; i < g_slots.size(); i++)
+    if (g_slots[i].dll == dll && g_slots[i].name == name)
+      return kThunkBase + uint32_t(i) * kThunkStride;
+  auto it = Registry().find({dll, name});
+  g_slots.push_back({dll, name, it == Registry().end() ? nullptr : &it->second});
+  return kThunkBase + uint32_t(g_slots.size() - 1) * kThunkStride;
+}
+
+}  // namespace
+
+Registrar::Registrar(const char* dll, const char* name, int nargs, Fn fn) {
+  Registry()[{dll, name}] = Def{dll, name, nargs, fn};
+}
+
+void BindImports() {
+  // The image loader already assigned thunk i to import i; mirror that
+  // numbering here so thunk addresses stay stable.
+  std::lock_guard<std::mutex> l(g_slots_mu);
+  g_slots.clear();
+  int missing = 0;
+  for (const auto& imp : g_proc->img.imports) {
+    std::string dll = NormaliseDll(imp.dll);
+    auto it = Registry().find({dll, imp.name});
+    const Def* def = it == Registry().end() ? nullptr : &it->second;
+    if (!def) missing++;
+    g_slots.push_back({dll, imp.name, def});
+  }
+  DS1_TRACE("hle: %zu imports bound, %d without a handler\n", g_slots.size(),
+            missing);
+}
+
+void CallThunk(Ctx& c, uint32_t thunk) {
+  size_t idx = (thunk - kThunkBase) / kThunkStride;
+  const Slot* s = nullptr;
+  {
+    std::lock_guard<std::mutex> l(g_slots_mu);
+    if ((thunk - kThunkBase) % kThunkStride == 0 && idx < g_slots.size())
+      s = &g_slots[idx];
+  }
+  if (!s)
+    FatalF("call to unknown thunk %08X (return address %08X)", thunk,
+           Rd32(c.esp));
+  if (!s->def)
+    FatalF("unimplemented import %s!%s called (return address %08X)",
+           s->dll.c_str(), s->name.c_str(), Rd32(c.esp));
+  const Def& d = *s->def;
+  if (g_trace) {
+    std::string args;
+    for (int i = 0; i < std::max(d.nargs, 0) && i < 8; i++) {
+      char buf[16];
+      std::snprintf(buf, sizeof buf, i ? ", %X" : "%X", Arg(c, i));
+      args += buf;
+    }
+    TraceF("[%04X] %s!%s(%s) from %08X\n", CurrentThread()->tid,
+           s->dll.c_str(), s->name.c_str(), args.c_str(), Rd32(c.esp));
+  }
+  uint32_t r = d.fn(c);
+  c.eax = r;
+  c.esp += 4 + (d.nargs > 0 ? 4 * uint32_t(d.nargs) : 0);
+}
+
+uint32_t ModuleHandle(const std::string& dll) {
+  std::string n = NormaliseDll(dll);
+  const auto& k = KnownDlls();
+  auto it = std::find(k.begin(), k.end(), n);
+  if (it == k.end()) return 0;
+  return kModuleBase + uint32_t(it - k.begin()) * 0x10000;
+}
+
+uint32_t ProcAddress(uint32_t hmodule, const std::string& name) {
+  const auto& k = KnownDlls();
+  uint32_t idx = (hmodule - kModuleBase) / 0x10000;
+  if (hmodule < kModuleBase || idx >= k.size()) return 0;
+  const std::string& dll = k[idx];
+  if (!Registry().count({dll, name})) {
+    WarnF("GetProcAddress(%s, %s): not implemented, returning NULL\n",
+          dll.c_str(), name.c_str());
+    return 0;
+  }
+  return AddSlot(dll, name);
+}
+
+void SetLastError(uint32_t e) { Wr32(CurrentThread()->teb + 0x34, e); }
+
+}  // namespace ds1::hle

@@ -51,10 +51,14 @@ void PresentFrame() {
     const char* e = std::getenv("DS1_SHOT_EVERY");
     return e ? std::atoi(e) : 0;
   }();
+  static const int from = [] {
+    const char* e = std::getenv("DS1_SHOT_FROM");
+    return e ? std::atoi(e) : 0;
+  }();
   static int frame = 0;
   frame++;
   gfx::Device* g = Gfx();
-  if (every > 0 && frame % every == 0) {
+  if (every > 0 && frame >= from && frame % every == 0) {
     int w = g_state.mode_w ? g_state.mode_w : 1024, h = g_state.mode_h ? g_state.mode_h : 768;
     std::vector<uint8_t> px(size_t(w) * h * 4);
     g->ReadBack({0, 0, w, h}, px.data(), uint32_t(w * 4), gfx::Format::X8R8G8B8);

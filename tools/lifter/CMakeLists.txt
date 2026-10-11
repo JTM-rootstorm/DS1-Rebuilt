@@ -14,5 +14,6 @@ add_executable(ds1_lift
   main.cpp
   program.cpp
   function.cpp
-  emit.cpp)
+  emit.cpp
+  x87test.cpp)
 target_link_libraries(ds1_lift PRIVATE ds1_image Zydis)

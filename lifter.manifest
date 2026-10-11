@@ -17,3 +17,15 @@ probe 004023DD WinMain
 name   0040A020 __except_handler3
 name   00409F28 _global_unwind2
 resume 0040A0A3
+
+# Voice/dialogue investigation (farmer cutscene has no voice or text).
+probe 005AF769 Go::PlayVoiceSound
+probe 005AFAED Go::PlayVoiceSound_pos
+probe 005AF7DA Go::SPlayVoiceSound
+probe 005AF7F9 Go::RCPlayVoiceSound
+probe 005AF822 Go::RCPlayVoiceSoundPeek
+probe 005AF940 Go::RCPlayVoiceSoundIdPeek
+probe 005AFE60 Go::PlaySound
+probe 005C8C69 GoConversation::RSActivateDialogue
+probe 005C8E17 GoConversation::RCActivateDialogue
+probe 0062EE57 GPGSound::PlayStream

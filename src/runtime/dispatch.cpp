@@ -12,6 +12,10 @@
 
 #include <chrono>
 #include <cstdarg>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <ctime>
+#include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -62,22 +66,48 @@ void DumpGuestState(const Ctx& c) {
 }  // namespace
 
 void FatalF(const char* fmt, ...) {
-  std::fflush(stdout);
-  std::fprintf(stderr, "FATAL: ");
+  char msg[2048];
   va_list ap;
   va_start(ap, fmt);
-  std::vfprintf(stderr, fmt, ap);
+  std::vsnprintf(msg, sizeof msg, fmt, ap);
   va_end(ap);
-  std::fprintf(stderr, "\n");
-  if (Thread* t = CurrentThread()) {
-    std::fprintf(stderr, "  guest thread %04X\n", t->tid);
-    DumpGuestState(t->ctx);
+  std::fflush(stdout);
+  // The report goes to stderr and, so it survives a filtered or closed
+  // terminal, to $XDG_DATA_HOME/ds1/crashes/crash-<time>-<pid>.txt.
+  auto report = [&] {
+    std::fprintf(stderr, "FATAL: %s\n", msg);
+    if (Thread* t = CurrentThread()) {
+      std::fprintf(stderr, "  guest thread %04X\n", t->tid);
+      DumpGuestState(t->ctx);
+    }
+    std::fprintf(stderr, "  host backtrace:\n");
+    std::fflush(stderr);
+    void* frames[64];
+    int nf = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, nf, 2);
+  };
+  report();
+  std::string dir;
+  if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x)
+    dir = std::string(x) + "/ds1";
+  else if (const char* h = std::getenv("HOME"))
+    dir = std::string(h) + "/.local/share/ds1";
+  if (!dir.empty()) {
+    mkdir(dir.c_str(), 0755);
+    dir += "/crashes";
+    mkdir(dir.c_str(), 0755);
+    char name[64];
+    std::snprintf(name, sizeof name, "/crash-%ld-%d.txt", long(std::time(nullptr)),
+                  int(getpid()));
+    std::string path = dir + name;
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd >= 0) {
+      std::fprintf(stderr, "  (report saved to %s)\n", path.c_str());
+      std::fflush(stderr);
+      dup2(fd, 2);
+      report();
+    }
   }
-  std::fprintf(stderr, "  host backtrace:\n");
-  std::fflush(stderr);
-  void* frames[64];
-  int nf = backtrace(frames, 64);
-  backtrace_symbols_fd(frames, nf, 2);
   std::_Exit(3);
 }
 
@@ -265,9 +295,37 @@ uint64_t Rdtsc(Ctx& c) {
 }
 
 void Probe(Ctx& c, uint32_t va, const char* name) {
-  std::fprintf(stderr, "probe: %s (%08X) entered, args %08X %08X %08X %08X\n",
-               name, va, Rd32(c.esp + 4), Rd32(c.esp + 8), Rd32(c.esp + 12),
-               Rd32(c.esp + 16));
+  std::string line;
+  char buf[96];
+  std::snprintf(buf, sizeof buf, "probe: %s (%08X) ecx %08X args", name, va, c.ecx);
+  line = buf;
+  for (int i = 1; i <= 4; i++) {
+    uint32_t a = Rd32(c.esp + 4 * i);
+    std::snprintf(buf, sizeof buf, " %08X", a);
+    line += buf;
+    // Show arguments that point at a short printable string, directly or
+    // through one pointer (the game's string class holds a char*).
+    auto str = [&](uint32_t v, std::string* out) {
+      if (v < 0x10000 || !g_proc->mem.IsCommitted(v) || !g_proc->mem.IsCommitted(v + 63))
+        return false;
+      const char* p = g_proc->mem.ptr<const char>(v);
+      int n = 0;
+      while (n < 64 && p[n] >= 0x20 && p[n] < 0x7F) n++;
+      if (!(n == 64 || p[n] == 0) || (n < 3 && n != 0)) return false;
+      *out = std::string(p, n);
+      return n >= 3;
+    };
+    std::string sv;
+    if (str(a, &sv)) {
+      line += "=\"" + sv + "\"";
+    } else if (a >= 0x10000 && g_proc->mem.IsCommitted(a) && g_proc->mem.IsCommitted(a + 3)) {
+      uint32_t q = Rd32(a);
+      if (q == 0) line += "->null";
+      else if (str(q, &sv)) line += "->\"" + sv + "\"";
+      else if (q >= 0x10000 && g_proc->mem.IsCommitted(q) && !GPtr(q)[0]) line += "->\"\"";
+    }
+  }
+  std::fprintf(stderr, "%s\n", line.c_str());
 }
 
 void X87Check(Ctx& c, uint32_t va) {

@@ -1,5 +1,7 @@
 #include "runtime/hle/hle.h"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -103,7 +105,11 @@ void CallThunk(Ctx& c, uint32_t thunk) {
     FatalF("unimplemented import %s!%s called (return address %08X)",
            s->dll.c_str(), s->name.c_str(), Rd32(c.esp));
   const Def& d = *s->def;
-  if (g_trace) {
+  // DS1_TRACE_FILTER=mss32 (substring of "dll!name") narrows the trace.
+  static const char* filter = std::getenv("DS1_TRACE_FILTER");
+  const bool trace = g_trace && (!filter || (s->dll + "!" + s->name).find(filter) !=
+                                                std::string::npos);
+  if (trace) {
     std::string args;
     for (int i = 0; i < std::max(d.nargs, 0) && i < 8; i++) {
       char buf[16];
@@ -123,7 +129,7 @@ void CallThunk(Ctx& c, uint32_t thunk) {
   --t_hle_depth;
   t_wd_hle_name = saved_name;
   t_wd_hle_ret = saved_ret;
-  if (g_trace) TraceF("[%04X]   -> %X\n", CurrentThread()->tid, r);
+  if (trace) TraceF("[%04X]   -> %X\n", CurrentThread()->tid, r);
   c.eax = r;
   c.esp += 4 + (d.nargs > 0 ? 4 * uint32_t(d.nargs) : 0);
 }

@@ -1,11 +1,53 @@
 # Findings
 
 ## Status (2026-10-11)
-M3 milestone reached: the splash logo and the MAIN MENU render through
-the D3D7 HLE on dxvk-native (800x600), stable for 60 s / 2500+ frames.
-Sound is reported absent (Miles HLE stub: no digital device) and Bink
-movies are skipped (BinkOpen fails); both are M4. Input/menu interaction
-not tested yet.
+M4 in progress. Sound and movies work: Miles (mss32, all 68 imports) on
+our own mixer over SDL3 audio, Bink (binkw32, all 10) on ffmpeg. The
+logo movie, the credits movie (main-menu attract loop) and menu music
+play; audio verified by capturing SDL's disk driver output (RMS per
+second) during automated runs. Next: menu interaction, starting a game,
+in-game audio (3D samples, streams) and the remaining HLE.
+
+M3 (main menu renders through the D3D7 HLE on dxvk-native) was reached
+before; notes below.
+
+M4 findings:
+- Sound init is gated by prefs.gas `sound_enabled` in the per-user dir
+  (~/.local/share/ds1/drive_c/Documents and Settings/Player/My
+  Documents/Dungeon Siege/). The M3 stub's failed AIL_open_digital_driver
+  made the game write `sound_enabled = false` there; reset it by hand.
+- GPGSound (0x62D806..0x6309xx) is the only Miles client: 2D samples,
+  up to 25 3D samples on "Miles Fast 2D Positional Audio" (picked when
+  EAX is off), MP3/WAV streams for music/voice via AIL_open_stream with
+  file callbacks into the Tank file system, fade timers.
+- Game audio data: 619 PCM WAVs (22/44 kHz, 16-bit) + 131 raw MP3s in
+  Sound.dsres; Mp3dec.asi in system/mss is Miles' MP3 decoder.
+- Callbacks (EOS, stream end, timers) run on a Miles service guest thread
+  (StartServiceThread) with no lock held; per-sample sequence numbers
+  drop stale end-of-sample events. The game treats "finished" as a set,
+  so whether AIL_end_sample fires EOS does not matter; we do not.
+- Sample file images live in demand-paged Tank views: hle::EnsureReadable
+  raises guest AVs for uncommitted pages before HLE code copies them
+  (what a DLL's read would do on Windows).
+- Bink movies are opened BINKFROMMEMORY | BINKSNDTRACK. ffmpeg's first
+  Bink reference frame is zero bytes (green in YUV); RAD's is black. The
+  credits keep their background as skip blocks, so frame buffers are
+  pre-filled black (custom get_buffer2).
+- Deactivation: the game's WM_ACTIVATEAPP(0) handler minimizes itself
+  (fullscreen-exclusive behaviour). ShowWindow(SW_MINIMIZE) used to count
+  as "show" and re-activate the app inside that handler, leaving the game
+  inactive while we believed it active: it never resumed. Only
+  activating SW_ commands activate now; in exclusive mode the host window
+  keeps the display-mode size (MoveWindow/minimize are bookkeeping) and
+  mouse coordinates are scaled window -> mode. DS1_TEST_FOCUS=lost,gained
+  (seconds) injects focus loss/regain for automated runs.
+- Performance: the debug preset built the x87 model and SoftFloat at -O0;
+  the menu intro animation (x87-heavy) ran at 135-145 ms/frame. They are
+  -O2 in every preset now (also the mixer and pixel formats). The game
+  locks the back buffer every frame without writing to it; Unlock now
+  uploads only rows that changed (snapshot diff) and readback reuses its
+  staging surface with a row-copy fast path. DS1_HITCH=ms logs slow
+  frames.
 
 Fixed on the way to the menu:
 - UnmapViewOfFile zero-filled pages after remapping them PROT_NONE ->
@@ -27,7 +69,10 @@ Fixed on the way to the menu:
 - SDL_HINT_NO_SIGNAL_HANDLERS: SIGTERM must actually stop the process.
 
 Dev aids: DS1_SHOT_EVERY=N + DS1_SHOT_DIR=dir saves every Nth presented
-frame as BMP.
+frame as BMP. DS1_HITCH=ms logs frames slower than that. DS1_TEST_FOCUS=
+lost,gained injects focus changes. Automated runs use
+SDL_AUDIO_DRIVER=disk SDL_AUDIO_DISK_OUTPUT_FILE=out.raw (F32LE stereo
+44.1 kHz) so nothing plays on the desktop's speakers.
 
 M3 work so far (see src/runtime/hle/{com,ddraw,d3d7,dbghelp}.cpp,
 src/runtime/gfx/):

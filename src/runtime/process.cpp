@@ -6,6 +6,7 @@
 #include <ucontext.h>
 
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -186,6 +187,36 @@ uint32_t StartHostThread(Thread* t, uint32_t entry,
   uint32_t r = s->exit_code;
   delete s;
   return r;
+}
+
+// A host-driven thread that may call into guest code (Miles' service
+// thread delivering callbacks): bound to guest thread t, with the same big
+// host stack and signal stack as other guest threads. Outside CallGuest it
+// counts as HLE code, so a host fault there is a runtime bug.
+struct ServiceStart {
+  Thread* t;
+  std::function<void()> fn;
+};
+
+static void* ServiceThreadMain(void* arg) {
+  std::unique_ptr<ServiceStart> s(static_cast<ServiceStart*>(arg));
+  t_current = s->t;
+  InstallSignalStack();
+  hle::t_hle_depth = 1;
+  s->fn();
+  return nullptr;
+}
+
+void StartServiceThread(Thread* t, std::function<void()> fn) {
+  auto* s = new ServiceStart{t, std::move(fn)};
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, kHostStack);
+  pthread_t th;
+  if (pthread_create(&th, &attr, ServiceThreadMain, s) != 0)
+    FatalF("pthread_create failed");
+  pthread_attr_destroy(&attr);
+  pthread_detach(th);
 }
 
 // The guest main thread runs on the process main thread (SDL, and Cocoa on

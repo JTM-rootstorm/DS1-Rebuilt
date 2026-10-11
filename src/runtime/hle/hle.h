@@ -60,6 +60,12 @@ uint32_t ThunkFor(const std::string& dll, const std::string& name);
 
 void SetLastError(uint32_t e);
 
+// Makes [va, va+len) readable before host code copies it, the way a DLL's
+// read would on Windows: each uncommitted page raises a guest access
+// violation, which the game's handlers may resolve (Tank demand paging
+// commits file views this way). False if a page stays inaccessible.
+bool EnsureReadable(Ctx& c, uint32_t va, uint32_t len);
+
 }  // namespace ds1::hle
 
 #define DS1_HLE_CAT2(a, b) a##b

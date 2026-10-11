@@ -13,6 +13,10 @@ set(DXVK_NATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native"
 
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+# ffmpeg (LGPL, linked dynamically): MP3 for Miles streams, Bink movies.
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+  libavformat libavcodec libavutil libswscale)
 set(DS1_LLVM_ROOT "/usr/lib/llvm/22" CACHE PATH
     "LLVM install with include/llvm/Demangle and lib64/libLLVMDemangle.a")
 
@@ -41,6 +45,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/softfloat.cmake" AND
   add_library(ds1_x87 STATIC src/runtime/x87.cpp)
   target_include_directories(ds1_x87 PUBLIC src)
   target_link_libraries(ds1_x87 PRIVATE softfloat)
+  # Every x87 instruction of the game runs through these: always optimise
+  # (an -O0 debug build made float-heavy scenes several times slower).
+  target_compile_options(ds1_x87 PRIVATE -O2)
+  target_compile_options(softfloat PRIVATE -O2)
 endif()
 # ----------------------------------------------------------------------
 
@@ -79,6 +87,8 @@ if(DS1_GENERATED AND TARGET ds1_x87)
     src/runtime/hle/shell_net.cpp
     src/runtime/hle/dbghelp.cpp
     src/runtime/hle/mss32.cpp
+    src/runtime/audio/source.cpp
+    src/runtime/audio/mixer.cpp
     src/runtime/hle/binkw32.cpp
     src/runtime/hle/com.cpp
     src/runtime/hle/ddraw.cpp
@@ -88,10 +98,14 @@ if(DS1_GENERATED AND TARGET ds1_x87)
     $<TARGET_OBJECTS:ds1_lifted>)
   target_include_directories(ds1 PRIVATE src)
   target_link_libraries(ds1 PRIVATE ds1_image ds1_x87 SDL3::SDL3
-                        Threads::Threads)
+                        Threads::Threads PkgConfig::FFMPEG)
   # LLVM's Microsoft demangler backs dbghelp!UnDecorateSymbolName (FuBi).
   target_include_directories(ds1 PRIVATE "${DS1_LLVM_ROOT}/include")
   target_link_libraries(ds1 PRIVATE "${DS1_LLVM_ROOT}/lib64/libLLVMDemangle.a")
+  # Per-pixel and per-sample host paths: optimised in every build type.
+  set_source_files_properties(src/runtime/audio/mixer.cpp
+    src/runtime/audio/source.cpp src/runtime/gfx/format.cpp
+    PROPERTIES COMPILE_OPTIONS "-O2")
   # Only the d3d9 backend sees dxvk's Windows/D3D9 headers.
   set_source_files_properties(src/runtime/gfx/d3d9_device.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${DXVK_NATIVE_DIR}/include/dxvk"

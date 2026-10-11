@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "runtime/ctx.h"
@@ -68,5 +69,9 @@ int RunProcess(const std::string& exe_path, const std::string& game_dir);
 // Creates the guest-side structures of a thread (TEB, TLS, stack) and
 // initialises its Ctx. Does not start it.
 Thread* CreateGuestThread(uint32_t stack_size);
+
+// Runs host function fn on a new detached host thread bound to guest thread
+// t (from CreateGuestThread), so fn may CallGuest(t->ctx, ...).
+void StartServiceThread(Thread* t, std::function<void()> fn);
 
 }  // namespace ds1

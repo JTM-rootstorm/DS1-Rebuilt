@@ -18,4 +18,10 @@ void EnsureSdlVideo();
 // called from PeekMessage/GetMessage and long waits.
 void PumpHostEvents();
 
+// DirectDraw exclusive mode on hwnd: the SDL window's client area is the
+// display mode (w x h) and the game's own window placement (MoveWindow,
+// minimize/restore on deactivation) is bookkeeping only, as it would be
+// behind a fullscreen exclusive surface on Windows. w = 0 ends it.
+void SetExclusiveMode(uint32_t hwnd, int w, int h);
+
 }  // namespace ds1

@@ -93,6 +93,9 @@ struct Surface : com::Object {
   guest::DDCOLORKEY ck_src{};
   bool locked = false;
   bool dirty_from_gpu = false;  // render target content newer than `mem`
+  // Render-target pixels as handed out by Lock, to upload only what the
+  // game changed on Unlock (it often locks just to wait for the GPU).
+  std::vector<uint8_t> lock_snapshot;
   uint32_t priority = 0, lod = 0;
   ~Surface() override;
 };

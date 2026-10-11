@@ -68,6 +68,21 @@ void PresentFrame() {
     }
   }
   g->Present();
+  // DS1_HITCH=ms: report frames that took longer than that.
+  static const double hitch_ms = [] {
+    const char* e = std::getenv("DS1_HITCH");
+    return e ? std::atof(e) : 0.0;
+  }();
+  if (hitch_ms > 0) {
+    static Uint64 last = 0, start = 0;
+    Uint64 now = SDL_GetTicksNS();
+    if (!start) start = now;
+    double dt = last ? (now - last) / 1e6 : 0;
+    if (dt > hitch_ms)
+      WarnF("hitch: frame %d took %.1f ms (t=%.2f s)\n", frame, dt,
+            (now - start) / 1e9);
+    last = now;
+  }
 }
 
 template <typename T>
@@ -643,7 +658,7 @@ HLE_NAMED("ddraw.dll", "IDirectDraw7::SetDisplayMode", DD7_SetDisplayMode, 6) {
   s.mode_h = h;
   s.mode_bpp = bpp;
   // The "mode" is the window's client size; the desktop is left alone.
-  if (SDL_Window* win = SdlWindowFor(s.hwnd)) SDL_SetWindowSize(win, w, h);
+  SetExclusiveMode(s.hwnd, w, h);
   if (s.gfx) s.gfx->ResetSwapChain(w, h, gfx::Format::X8R8G8B8, s.vsync);
   return DD_OK;
 }
@@ -837,7 +852,10 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Lock", DDS7_Lock, 5) {
     WarnF("ddraw: Lock of a Z buffer is not supported\n");
     return DDERR_UNSUPPORTED;
   }
-  if (IsRenderTarget(*s)) PullRenderTarget(*s);
+  if (IsRenderTarget(*s)) {
+    PullRenderTarget(*s);
+    s->lock_snapshot.assign(GPtr(s->mem), GPtr(s->mem) + size_t(s->pitch) * s->height);
+  }
   if (!s->mem) AllocMem(*s);
   s->locked = true;
   DDSURFACEDESC2 d = s->desc;
@@ -861,10 +879,26 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Unlock", DDS7_Unlock, 2) {
   if (s->kind == Surface::Kind::Texture) {
     UploadLevel(*s);
   } else if (IsRenderTarget(*s)) {
-    // Write the edited pixels back over the render target.
-    gfx::Rect r{0, 0, s->width, s->height};
-    Gfx()->Blit(GPtr(s->mem), s->pitch, s->fmt, s->width, s->height, r, r,
-                false, 0);
+    // Write the rows the game edited back over the render target.
+    const uint8_t* mem = GPtr(s->mem);
+    const uint8_t* snap = s->lock_snapshot.data();
+    int top = s->height, bottom = 0;
+    if (s->lock_snapshot.size() == size_t(s->pitch) * s->height) {
+      for (int y = 0; y < s->height; y++)
+        if (std::memcmp(mem + size_t(y) * s->pitch, snap + size_t(y) * s->pitch, s->pitch)) {
+          top = std::min(top, y);
+          bottom = y + 1;
+        }
+    } else {
+      top = 0;
+      bottom = s->height;
+    }
+    s->lock_snapshot.clear();
+    if (top < bottom) {
+      gfx::Rect r{0, top, s->width, bottom};
+      Gfx()->Blit(GPtr(s->mem), s->pitch, s->fmt, s->width, s->height, r, r,
+                  false, 0);
+    }
   }
   return DD_OK;
 }

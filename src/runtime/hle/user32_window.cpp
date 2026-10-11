@@ -73,6 +73,8 @@ struct Window {
   std::vector<uint8_t> extra;      // cbWndExtra bytes (GetWindowLong >= 0)
   uint32_t tid = 0;
   bool visible = false, enabled = true, destroyed = false;
+  bool minimized = false;      // as the game asked (IsIconic)
+  int mode_w = 0, mode_h = 0;  // DirectDraw exclusive mode, see header
   SDL_Window* sdl = nullptr;
 };
 
@@ -278,6 +280,27 @@ void WindowOrigin(uint32_t hwnd, int* x, int* y) {
   }
 }
 
+// SDL window coordinates -> client coordinates. In exclusive mode the
+// client area is the display mode, whatever size the host window really
+// has (resized by the user, or by desktop scaling), so scale.
+void ModeScale(uint32_t hwnd, float* sx, float* sy) {
+  *sx = *sy = 1.0f;
+  SDL_Window* sdl;
+  int mw, mh;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    Window* w = Win(hwnd);
+    if (!w || !w->mode_w || !w->sdl) return;
+    sdl = w->sdl;
+    mw = w->mode_w;
+    mh = w->mode_h;
+  }
+  int ww = 0, wh = 0;
+  if (!SDL_GetWindowSize(sdl, &ww, &wh) || ww <= 0 || wh <= 0) return;
+  *sx = float(mw) / ww;
+  *sy = float(mh) / wh;
+}
+
 void ActivateApp(uint32_t hwnd, bool active) {
   {
     std::lock_guard<std::recursive_mutex> l(g_mu);
@@ -345,7 +368,9 @@ void HandleSdlEvent(const SDL_Event& e) {
       if (!h) break;
       int ox, oy;
       WindowOrigin(h, &ox, &oy);
-      int x = int(e.motion.x), y = int(e.motion.y);
+      float kx, ky;
+      ModeScale(h, &kx, &ky);
+      int x = int(e.motion.x * kx), y = int(e.motion.y * ky);
       g_mouse_x = ox + x;
       g_mouse_y = oy + y;
       Post(h, WM_MOUSEMOVE, MouseKeys(), MkLparam(x, y));
@@ -356,7 +381,9 @@ void HandleSdlEvent(const SDL_Event& e) {
       uint32_t h = HwndForSdl(e.button.windowID);
       if (!h) break;
       bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-      int x = int(e.button.x), y = int(e.button.y);
+      float kx, ky;
+      ModeScale(h, &kx, &ky);
+      int x = int(e.button.x * kx), y = int(e.button.y * ky);
       uint32_t base;
       uint8_t vk;
       switch (e.button.button) {
@@ -454,16 +481,63 @@ void EnsureSdlVideo() {
   }
 }
 
+// Test hook: DS1_TEST_FOCUS="lost,gained" (seconds since the first pump)
+// injects window focus loss and regain, to exercise the game's
+// deactivation path without touching the desktop.
+void InjectTestFocus() {
+  static int stage = -1;
+  static double lost = 0, gained = 0;
+  static Uint64 t0 = 0;
+  if (stage == -1) {
+    stage = 2;
+    const char* env = std::getenv("DS1_TEST_FOCUS");
+    if (env && std::sscanf(env, "%lf,%lf", &lost, &gained) == 2) stage = 0;
+    t0 = SDL_GetTicks();
+  }
+  if (stage >= 2) return;
+  double t = (SDL_GetTicks() - t0) / 1000.0;
+  if (t < (stage == 0 ? lost : gained)) return;
+  uint32_t hwnd = 0;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    for (auto& [h, w] : g_windows)
+      if (w.sdl && !w.destroyed) hwnd = h;
+  }
+  if (!hwnd) return;
+  WarnF("DS1_TEST_FOCUS: focus %s at %.1f s\n", stage == 0 ? "lost" : "gained", t);
+  if (stage == 0) {
+    for (int vk = 0; vk < 256; vk++) g_key_down[vk] = 0;
+    ActivateApp(hwnd, false);
+  } else {
+    ActivateApp(hwnd, true);
+  }
+  stage++;
+}
+
 void PumpHostEvents() {
   if (!g_sdl_up || !OnMainThread()) return;
   SDL_Event e;
   while (SDL_PollEvent(&e)) HandleSdlEvent(e);
+  InjectTestFocus();
 }
 
 SDL_Window* SdlWindowFor(uint32_t hwnd) {
   std::lock_guard<std::recursive_mutex> l(g_mu);
   Window* w = Win(hwnd);
   return w ? w->sdl : nullptr;
+}
+
+void SetExclusiveMode(uint32_t hwnd, int w, int h) {
+  SDL_Window* sdl;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    Window* win = Win(hwnd);
+    if (!win) return;
+    win->mode_w = w;
+    win->mode_h = h;
+    sdl = win->sdl;
+  }
+  if (sdl && w) SDL_SetWindowSize(sdl, w, h);
 }
 
 namespace hle {
@@ -628,31 +702,47 @@ HLE("user32.dll", IsWindow, 1) {
 HLE("user32.dll", ShowWindow, 2) {
   uint32_t hwnd = Arg(c, 0), cmd = Arg(c, 1);
   bool was, show = cmd != 0;  // SW_HIDE = 0
+  // SW_SHOWMINIMIZED, SW_MINIMIZE, SW_SHOWMINNOACTIVE
+  bool minimize = cmd == 2 || cmd == 6 || cmd == 7;
+  // SW_SHOWNORMAL, SW_SHOWMAXIMIZED, SW_RESTORE, SW_SHOWDEFAULT
+  bool restore = cmd == 1 || cmd == 3 || cmd == 9 || cmd == 10;
+  // Only these make the window the active one; minimizing hands
+  // activation to some other window (and the game minimizes itself from
+  // its WM_ACTIVATEAPP(0) handler, so activating here would loop).
+  bool activates = restore || cmd == 5;
   SDL_Window* sdl;
+  bool exclusive;
   {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     Window* w = Win(hwnd);
     if (!w) return 0;
     was = w->visible;
     w->visible = show;
+    if (minimize) w->minimized = true;
+    if (restore) w->minimized = false;
     sdl = w->sdl;
+    exclusive = w->mode_w != 0;
   }
   if (sdl) {
-    if (show) {
-      SDL_ShowWindow(sdl);
-      if (cmd == 6 || cmd == 2 || cmd == 7) SDL_MinimizeWindow(sdl);
-    } else {
+    if (!show) {
       SDL_HideWindow(sdl);
+    } else {
+      SDL_ShowWindow(sdl);
+      // Behind an exclusive-mode "screen" the game's minimize on
+      // deactivation is not carried out: the window simply stays put
+      // while the game idles, and focusing it again resumes the game.
+      if (minimize && !exclusive) SDL_MinimizeWindow(sdl);
+      if (restore && !exclusive) SDL_RestoreWindow(sdl);
     }
   }
   if (show != was) Send(hwnd, WM_SHOWWINDOW, show ? 1 : 0, 0);
   bool activate = false;
   {
-    // A freshly shown top-level window becomes the active app window.
-    // Record that before sending: the game's activation handler calls
-    // ShowWindow again, which must then see it as already active.
+    // A shown top-level window becomes the active app window. Record that
+    // before sending: the game's activation handler calls ShowWindow
+    // again, which must then see it as already active.
     std::lock_guard<std::recursive_mutex> l(g_mu);
-    if (show && sdl && g_active != hwnd) {
+    if (activates && sdl && g_active != hwnd) {
       g_active = g_focus = hwnd;
       activate = true;
     }
@@ -690,9 +780,17 @@ HLE("user32.dll", EnableWindow, 2) {
 }
 
 HLE("user32.dll", IsIconic, 1) {
-  SDL_Window* s = SdlWindowFor(Arg(c, 0));
+  SDL_Window* s;
+  {
+    std::lock_guard<std::recursive_mutex> l(g_mu);
+    Window* w = Win(Arg(c, 0));
+    if (!w) return 0;
+    if (w->minimized) return 1;
+    s = w->sdl;
+  }
   return s && (SDL_GetWindowFlags(s) & SDL_WINDOW_MINIMIZED) ? 1 : 0;
 }
+
 
 // Like Windows, WM_SIZE/WM_MOVE are only sent when the size/position
 // actually changes (the game re-applies its rect from its WM_SIZE handler;
@@ -716,7 +814,8 @@ void ApplyRect(uint32_t hwnd, int x, int y, int w, int h, bool move, bool size) 
       sized = true;
     }
     ClientSize(*win, &cw, &ch);
-    sdl = win->sdl;
+    // In exclusive mode the host window keeps the display-mode size.
+    sdl = win->mode_w ? nullptr : win->sdl;
   }
   if (sdl && sized) SDL_SetWindowSize(sdl, std::max(cw, 1), std::max(ch, 1));
   if (sized) Send(hwnd, WM_SIZE, 0, MkLparam(cw, ch));
@@ -1169,7 +1268,9 @@ HLE("user32.dll", SetCursorPos, 2) {
   if (s && !Background() && SDL_GetKeyboardFocus() == s) {
     int ox, oy;
     WindowOrigin(hwnd, &ox, &oy);
-    SDL_WarpMouseInWindow(s, float(x - ox), float(y - oy));
+    float kx, ky;
+    ModeScale(hwnd, &kx, &ky);
+    SDL_WarpMouseInWindow(s, float(x - ox) / kx, float(y - oy) / ky);
   }
   return 1;
 }

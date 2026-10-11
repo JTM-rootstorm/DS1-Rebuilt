@@ -279,6 +279,7 @@ HLE("kernel32.dll", CreateFileA, 7) {
     SetLastError(ErrnoToWin(errno));
     return kInvalidHandle;
   }
+  DS1_TRACE("  CreateFileA(%s) -> %s\n", gpath.c_str(), path.c_str());
   auto f = std::make_shared<FileObject>();
   f->fd = fd;
   f->host_path = path;

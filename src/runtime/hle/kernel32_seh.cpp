@@ -8,6 +8,7 @@
 // __except block it unwinds with RtlUnwind and then reaches a manifest
 // `resume` site, which throws GuestResume to the owning lifted function.
 
+#include <algorithm>
 #include <cstring>
 
 #include "runtime/hle/hle.h"
@@ -179,6 +180,22 @@ bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr) {
   bool cont = Dispatch_(c, 0xC0000005, 0, 2, params, 0);
   c.esp = saved_esp;
   return cont;
+}
+
+bool EnsureReadable(Ctx& c, uint32_t va, uint32_t len) {
+  if (!len) return true;
+  GuestMemory& mem = g_proc->mem;
+  uint32_t end = va + len - 1;
+  if (end < va) return false;
+  for (uint32_t p = va & ~0xFFFu;; p += 0x1000) {
+    // A guest handler may commit the page and continue; anything else
+    // (a second fault on the same page, no handler) is a failure.
+    if (!mem.IsCommitted(p) &&
+        (!RaiseAccessViolation(c, false, std::max(p, va)) || !mem.IsCommitted(p)))
+      return false;
+    if (p >= (end & ~0xFFFu)) break;
+  }
+  return true;
 }
 
 }  // namespace ds1::hle

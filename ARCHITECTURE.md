@@ -31,7 +31,7 @@ DungeonSiege.exe ──Ghidra──> functions.tsv, jump tables ─┐
    │        ▼                                                          │
    │ HLE: kernel32 user32 gdi32 advapi32 ole32 mss32 binkw32 ddraw ... │
    │        │          │                 │                 │           │
-   │     POSIX       SDL3         RenderDevice        OpenAL Soft,     │
+   │     POSIX       SDL3         RenderDevice        SDL3 audio,      │
    │                (window,     ├ d3d9 (dxvk-native)  ffmpeg          │
    │                 input)      └ SDL_GPU: Vulkan / Metal             │
    └───────────────────────────────────────────────────────────────────┘
@@ -52,7 +52,7 @@ The arena is not emulation: it is how the program's address space is
 represented. A guest load is one add of a base register plus the load
 itself, on both x86-64 and ARM64.
 
-Host libraries (SDL3, dxvk/SDL_GPU, OpenAL, libc) are ordinary 64-bit
+Host libraries (SDL3, dxvk/SDL_GPU, ffmpeg, libc) are ordinary 64-bit
 libraries and never see guest addresses. The HLE layer is the only
 place where the two worlds meet:
 - Guest -> host: a guest pointer argument becomes `base + addr`
@@ -227,10 +227,15 @@ on that state. What is known:
   text through GDI (check with Ghidra). Dialogs stubbed.
 - advapi32: registry backed by a small file.
 - ole32: CoCreateInstance fails for DirectPlay8 (multiplayer off).
-- mss32 (Miles, 68 calls): OpenAL Soft for 2D/3D samples and streams
-  (bundled on macOS, where the system OpenAL is deprecated), MP3 via a
-  small decoder (dr_mp3/minimp3).
-- binkw32: stub first (BinkOpen -> NULL skips videos), later ffmpeg.
+- mss32 (Miles, 68 calls): our own mixer on an SDL3 audio stream
+  (runtime/audio): linear resampling, loop counts, gain ramps, and the
+  "Miles Fast 2D Positional Audio" model (inverse-distance rolloff from
+  min_dist, muted past max_dist, stereo pan) that the game selects with
+  EAX off. Chosen over OpenAL Soft: exact Miles semantics (byte
+  positions, EOS timing) are simpler in our own mixer, and SDL3 is
+  already a dependency on every platform. MP3 through libavcodec.
+- binkw32: ffmpeg (libavformat Bink demuxer from memory, binkvideo/
+  binkaudio decoders, swscale), audio into the Miles mixer.
 - dbghelp: UnDecorateSymbolName for FuBi; the rest stubbed.
 - wsock32, imm32, version, shfolder: stubs / small shims.
 
@@ -271,8 +276,8 @@ need their own manifest.
 
 Licence hygiene for what we publish:
 - dxvk (zlib), SDL3 (zlib), SoftFloat 3e (BSD-3), Zydis (MIT), D7VK
-  (zlib, reference) are fine to vendor or link. OpenAL Soft and ffmpeg
-  are LGPL: link dynamically.
+  (zlib, reference) are fine to vendor or link. ffmpeg is LGPL (as
+  long as it is built without GPL parts): link dynamically.
 - Wine and Bochs are LGPL and used as references only: read them to
   learn behaviour, do not copy code from them into this repo.
 

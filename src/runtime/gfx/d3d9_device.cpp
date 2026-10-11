@@ -73,6 +73,7 @@ class D3D9Device final : public Device {
     for (auto& [id, t] : textures_) t->Release();
     for (auto& [id, d] : depths_) d.surf->Release();
     if (staging_) staging_->Release();
+    if (readback_) readback_->Release();
     if (backbuffer_) backbuffer_->Release();
     if (dev_) dev_->Release();
     if (d3d_) d3d_->Release();
@@ -112,6 +113,10 @@ class D3D9Device final : public Device {
       if (staging_) {
         staging_->Release();
         staging_ = nullptr;
+      }
+      if (readback_) {
+        readback_->Release();
+        readback_ = nullptr;
       }
       Check(dev_->Reset(&pp), "Reset");
       for (auto& [id, d] : depths_)
@@ -230,6 +235,11 @@ class D3D9Device final : public Device {
                          size_t(sr.top + y) * pitch + size_t(sr.left) * bpp;
       uint32_t* d = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(lr.pBits) +
                                                 size_t(y) * uint32_t(lr.Pitch));
+      if (!colorkey && (fmt == Format::X8R8G8B8 || fmt == Format::A8R8G8B8)) {
+        const uint32_t* p = reinterpret_cast<const uint32_t*>(s);
+        for (int x = 0; x < w; x++) d[x] = p[x] | 0xFF000000u;
+        continue;
+      }
       for (int x = 0; x < w; x++, s += bpp) {
         if (colorkey && RawPixel(s, fmt) == key)
           d[x] = 0;
@@ -292,29 +302,48 @@ class D3D9Device final : public Device {
     dev_->GetRenderTarget(0, &rt);
     D3DSURFACE_DESC d;
     rt->GetDesc(&d);
-    IDirect3DSurface9* sys = nullptr;
-    if (FAILED(dev_->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format,
-                                                 D3DPOOL_SYSTEMMEM, &sys,
+    if (readback_) {
+      D3DSURFACE_DESC rd;
+      readback_->GetDesc(&rd);
+      if (rd.Width != d.Width || rd.Height != d.Height || rd.Format != d.Format) {
+        readback_->Release();
+        readback_ = nullptr;
+      }
+    }
+    if (!readback_ &&
+        FAILED(dev_->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format,
+                                                 D3DPOOL_SYSTEMMEM, &readback_,
                                                  nullptr))) {
+      readback_ = nullptr;
       rt->Release();
       return;
     }
-    dev_->GetRenderTargetData(rt, sys);
+    dev_->GetRenderTargetData(rt, readback_);
     D3DLOCKED_RECT lr;
-    if (SUCCEEDED(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+    if (SUCCEEDED(readback_->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
       uint32_t bpp = BitsPerPixel(fmt) / 8;
-      for (int y = r.top; y < r.bottom; y++)
-        for (int x = r.left; x < r.right; x++) {
-          uint32_t c = *reinterpret_cast<const uint32_t*>(
-              static_cast<const uint8_t*>(lr.pBits) + size_t(y) * uint32_t(lr.Pitch) +
-              size_t(x) * 4);
-          EncodePixel(static_cast<uint8_t*>(dst) + size_t(y - r.top) * pitch +
-                          size_t(x - r.left) * bpp,
-                      fmt, c | 0xFF000000u);
+      int w = r.right - r.left;
+      for (int y = r.top; y < r.bottom; y++) {
+        const uint32_t* src = reinterpret_cast<const uint32_t*>(
+            static_cast<const uint8_t*>(lr.pBits) + size_t(y) * uint32_t(lr.Pitch)) + r.left;
+        uint8_t* out = static_cast<uint8_t*>(dst) + size_t(y - r.top) * pitch;
+        if (fmt == Format::X8R8G8B8 || fmt == Format::A8R8G8B8) {
+          // The render target is X8R8G8B8 too: copy, opaque alpha.
+          uint32_t* o = reinterpret_cast<uint32_t*>(out);
+          for (int x = 0; x < w; x++) o[x] = src[x] | 0xFF000000u;
+        } else if (fmt == Format::R5G6B5) {
+          uint16_t* o = reinterpret_cast<uint16_t*>(out);
+          for (int x = 0; x < w; x++) {
+            uint32_t c = src[x];
+            o[x] = uint16_t((c >> 8 & 0xF800) | (c >> 5 & 0x07E0) | (c >> 3 & 0x001F));
+          }
+        } else {
+          for (int x = 0; x < w; x++)
+            EncodePixel(out + size_t(x) * bpp, fmt, src[x] | 0xFF000000u);
         }
-      sys->UnlockRect();
+      }
+      readback_->UnlockRect();
     }
-    sys->Release();
     rt->Release();
   }
 
@@ -483,6 +512,7 @@ class D3D9Device final : public Device {
   IDirect3DDevice9* dev_ = nullptr;
   IDirect3DSurface9* backbuffer_ = nullptr;
   IDirect3DTexture9* staging_ = nullptr;
+  IDirect3DSurface9* readback_ = nullptr;  // system-memory copy of the RT
   std::map<uint32_t, IDirect3DTexture9*> textures_;
   std::map<uint32_t, Depth> depths_;
   uint32_t next_id_ = 1;

@@ -6,7 +6,7 @@ ARCHITECTURE.md.
 ## Layout
 - Project: ~/Documents/Programming/Recomp/Dungeon Siege/DS1
 - Game (GOG, DRM-free; NEVER commit or copy into the repo):
-  /home/mike/Games/Heroic/Dungeon Siege/  (DungeonSiege.exe, Resources/,
+  $HOME/Games/Heroic/Dungeon Siege/  (DungeonSiege.exe, Resources/,
   Maps/, *.dll)
 - dxvk source: ../tools_ext/dxvk (tag v3.1.1, do not edit; patches go in
   a separate branch with a note in FINDINGS.md)
@@ -20,11 +20,11 @@ ARCHITECTURE.md.
 - Lifting is a separate step; re-run it after any change to tools/lifter,
   symbols/ or the EXE, then re-run cmake (the generated file list is
   globbed):
-  `out/build/debug/tools/lifter/ds1_lift --exe "/home/mike/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
+  `out/build/debug/tools/lifter/ds1_lift --exe "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
   It only rewrites files whose content changed. generated/lift_report.txt
   lists unimplemented instructions and warnings.
 - Inspect one function's decode + C++: `ds1_lift --exe ... --dump <hexva>`.
-- Run: `out/build/debug/ds1 --game-dir "/home/mike/Games/Heroic/Dungeon Siege"`
+- Run: `out/build/debug/ds1 --game-dir "$HOME/Games/Heroic/Dungeon Siege"`
   (DS1_TRACE=1 logs every HLE call).
 - Rebuild dxvk-native (only if tools_ext/dxvk changes):
   `ninja -C ../tools_ext/dxvk/build-native install`
@@ -63,7 +63,7 @@ ARCHITECTURE.md.
 - /usr/share/ghidra/support/analyzeHeadless has no exec bit: run it as
   `bash /usr/share/ghidra/support/analyzeHeadless ...`.
 - Regenerate symbols after any Ghidra change that matters:
-  `python3 -I tools/pe_symbols.py "/home/mike/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --out symbols`
+  `python3 -I tools/pe_symbols.py "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --out symbols`
   and the headless ExportFunctions.java run (command in its header).
 - No game assets, memory dumps, extracted tank contents or symbol dumps in
   git. Lifted code is generated and gitignored too.

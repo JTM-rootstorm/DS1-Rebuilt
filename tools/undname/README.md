@@ -11,7 +11,7 @@ under Wine (behaviour reference only; nothing from it ships):
 
     i686-w64-mingw32-gcc -O1 tools/undname/undref.c -o /tmp/undref.exe
     awk -F'\t' '$2=="func"{print $3}' symbols/exports.tsv | sort -u > /tmp/names.txt
-    cp "/home/mike/Games/Heroic/Dungeon Siege/dbghelp.dll" /tmp/dbghelp_ref.dll
+    cp "$HOME/Games/Heroic/Dungeon Siege/dbghelp.dll" /tmp/dbghelp_ref.dll
     wine /tmp/undref.exe 'Z:\tmp\dbghelp_ref.dll' /tmp/names.txt /tmp/ref.txt
 
 Then undecorate the same names with ds1::hle::UndnameMsvc and diff (the

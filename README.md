@@ -22,19 +22,26 @@ port is planned.
 
 ## How it works
 
-- **Lifter** (`tools/lifter`): decodes the EXE with Zydis and emits C++
-  for every function, one basic block at a time, with exact x86 integer
-  and flag semantics. Straight-line x87 code becomes guarded "runs" that
-  keep the FPU register stack in locals.
-- **x87 model** (`src/runtime/x87.cpp`): the game depends on 80-bit x87
-  behaviour (precision and rounding control, status-word flags), so the
-  FPU is modelled exactly on Berkeley SoftFloat with integer fast paths.
-  Tests compare it bit for bit against a real x87.
-- **Runtime and HLE** (`src/runtime`): the guest's 4 GiB address space,
-  threads, SEH, and every imported Windows/DirectX/Miles/Bink function,
-  implemented on SDL3, dxvk-native (Direct3D 9 on Vulkan) and ffmpeg.
+The machinery lives in x86recomp, a library shared with other PC game
+recomps and checked out next to this repository; this repository holds
+what is specific to Dungeon Siege (configuration, lifter manifest, game
+hooks, docs).
 
-[ARCHITECTURE.md](ARCHITECTURE.md) describes the design in detail.
+- **Lifter** (x86recomp `tools/lifter`): decodes the EXE with Zydis and
+  emits C++ for every function, one basic block at a time, with exact
+  x86 integer and flag semantics. Straight-line x87 code becomes guarded
+  "runs" that keep the FPU register stack in locals.
+- **x87 model** (x86recomp `src/runtime/x87.cpp`): the game depends on
+  80-bit x87 behaviour (precision and rounding control, status-word
+  flags), so the FPU is modelled exactly on Berkeley SoftFloat with
+  integer fast paths. Tests compare it bit for bit against a real x87.
+- **Runtime and HLE** (x86recomp `src/runtime`): the guest's 4 GiB
+  address space, threads, SEH, and every imported Windows/DirectX/Miles/
+  Bink function, implemented on SDL3, dxvk-native (Direct3D 9 on Vulkan)
+  and ffmpeg.
+
+x86recomp's ARCHITECTURE.md describes the design in detail;
+[ARCHITECTURE.md](ARCHITECTURE.md) here covers the Dungeon Siege parts.
 
 ## What you need
 
@@ -50,7 +57,9 @@ port is planned.
 
 ## Building
 
-Paths below assume the game is in `$GAME` and this repository in `$REPO`.
+Paths below assume the game is in `$GAME` and this repository in `$REPO`,
+with an x86recomp checkout next to it as `$REPO/../../x86recomp` (pass
+`-DX86RECOMP_DIR=...` to cmake otherwise).
 
 1. **dxvk-native** (DXVK v3.1.1, Direct3D 9 only, SDL3 window system):
 
@@ -72,18 +81,19 @@ Paths below assume the game is in `$GAME` and this repository in `$REPO`.
    ```sh
    cd "$REPO"
    cmake --preset release -DDXVK_NATIVE_DIR=/path/to/dxvk-native \
-     -DDS1_LLVM_ROOT=/usr/lib/llvm/22
-   cmake --build --preset release --target ds1_lift
+     -DRECOMP_LLVM_ROOT=/usr/lib/llvm/22
+   cmake --build --preset release --target recomp_lift
    ```
 
 3. **Symbols** from your copy of the EXE (written to `symbols/`, which
    is ignored by git):
 
    ```sh
-   python3 -I tools/pe_symbols.py "$GAME/DungeonSiege.exe" --out symbols
+   X86RECOMP="$REPO/../../x86recomp"
+   python3 -I "$X86RECOMP/tools/pe_symbols.py" "$GAME/DungeonSiege.exe" --out symbols
    mkdir -p /tmp/ds1_ghidra
    bash /usr/share/ghidra/support/analyzeHeadless /tmp/ds1_ghidra ds1 \
-     -import "$GAME/DungeonSiege.exe" -scriptPath tools/ghidra \
+     -import "$GAME/DungeonSiege.exe" -scriptPath "$X86RECOMP/tools/ghidra" \
      -postScript ExportFunctions.java symbols/functions.tsv \
      -postScript ExportJumpTables.java symbols/jumptables.tsv
    ```
@@ -96,8 +106,8 @@ Paths below assume the game is in `$GAME` and this repository in `$REPO`.
    also ignored):
 
    ```sh
-   out/build/release/tools/lifter/ds1_lift --exe "$GAME/DungeonSiege.exe" \
-     --symbols symbols --out generated
+   out/build/release/x86recomp/tools/lifter/recomp_lift \
+     --exe "$GAME/DungeonSiege.exe" --symbols symbols --out generated
    cmake --preset release
    cmake --build --preset release
    ```

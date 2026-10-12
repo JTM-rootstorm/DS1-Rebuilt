@@ -1,6 +1,12 @@
 # Findings
 
 ## Status (2026-10-12)
+Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared
+x86recomp library (../../x86recomp); src/runtime/..., tools/lifter/...
+and tests/... paths in the notes below now refer to that repository.
+Lifted output is unchanged by the move (generated/ identical apart from
+the namespace), all 5 tests pass, and the game boots to the main menu.
+
 M4 in progress; single player is playable from a new game to Wesrin Cross
 (user playtest, ~1 h of play). Verified in play: menus, hero creation, the
 intro cinematic, movement and combat (frame rate holds with a party at the

@@ -16,8 +16,8 @@ release builds hold the game's own 60 fps cap in game. Not yet seen:
 regions past Stonebridge, the ending. Known gaps: the GDI "Lucida Console"
 font texture is blank (dev console / debug text; needs a rasteriser), IME
 functions are not provided (GetProcAddress NULL), the game's resolution
-list stops at 1024x768 (its own filter). Open: shadow size (see Graphics),
-the intermittent issues below.
+list stops at 1024x768 (its own filter). Open: the intermittent issues
+below.
 
 M3 (main menu renders through the D3D7 HLE on dxvk-native) was reached
 before; notes below.
@@ -410,15 +410,16 @@ messages / GetAsyncKeyState), no DirectSound (Miles owns audio).
   (recreated empty on device Reset), and a colour-fill Blt on one is a
   GPU ColorFill (the old fill went to guest memory and the upload failed,
   leaving the texture black: ground-wide black shadows).
-- Shadow size (open): shadows look too long in some saves ("Strange
-  Shadows (0-50-27)") but fine in others ("Funny Dead Krug"). The
-  silhouette pass and the ground pass use the same light projection
-  (perspective, focal 6.1, light ~11 m away looking down ~38 deg) and the
-  standard 0.5 scale/bias; the texture matrix is invView * that, as
-  D3D's MultiplyTransform order gives. So we pass the game's own maths
-  through; a low light (time of day?) would explain it. The original
-  will not run under Wine/Proton here for a reference; the user is
-  comparing saves at different times of day.
+- Shadow size (not a bug, most likely): shadows that looked too long in
+  some saves follow the nearest light. In a torch-lit tower (user
+  playtest) they change length and direction moving between torches.
+  The game projects each caster's silhouette from a per-caster light
+  (perspective, e.g. ~11 m away looking down ~38 deg in "Strange
+  Shadows (0-50-27)"), and we pass its maths through unchanged: the
+  silhouette pass and the ground pass share that projection with the
+  standard 0.5 scale/bias, and the texture matrix is invView * that,
+  in D3D's MultiplyTransform order. No reference from the original:
+  it does not run under Wine/Proton here.
 
 ## Assets
 Resources/*.dsres and Maps/*.dsmap are Tank archives (~1.1 GB). Engine

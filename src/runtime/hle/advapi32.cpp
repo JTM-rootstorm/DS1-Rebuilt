@@ -43,11 +43,7 @@ std::map<uint32_t, std::string> g_open;  // HKEY -> key path
 uint32_t g_next_hkey = 0x1000;
 bool g_reg_loaded = false;
 
-std::string RegFile() {
-  const char* x = std::getenv("XDG_DATA_HOME");
-  std::string base = x && *x ? x : std::string(std::getenv("HOME")) + "/.local/share";
-  return base + "/ds1/registry.txt";
-}
+std::string RegFile() { return DataDir() + "/registry.txt"; }
 
 RegValue Str(const std::string& s) {
   RegValue v{kRegSz, {}};
@@ -68,11 +64,8 @@ void Seed() {
 }
 
 void Save() {
-  std::string path = RegFile();
-  std::string dir = path.substr(0, path.find_last_of('/'));
-  for (size_t i = 1; i <= dir.size(); i++)
-    if (i == dir.size() || dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0755);
-  std::ofstream f(path);
+  MakeDirs(DataDir());
+  std::ofstream f(RegFile());
   for (const auto& [key, vals] : g_reg) {
     f << "[" << key << "]\n";
     for (const auto& [name, v] : vals) {

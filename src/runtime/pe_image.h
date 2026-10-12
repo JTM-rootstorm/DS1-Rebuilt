@@ -35,16 +35,9 @@ struct PeImport {
   gaddr thunk_va;    // value stored in that slot
 };
 
-struct PeExport {
-  gaddr va;
-  uint32_t ordinal;
-  std::string name;  // MSVC-mangled, may be empty
-};
-
 struct PeTls {
   gaddr raw_start = 0, raw_end = 0;  // template for each thread's block
   gaddr index_va = 0;                // where the loader stores the TLS index
-  gaddr callbacks_va = 0;            // null-terminated array of guest fns
   uint32_t zero_fill = 0;
 };
 
@@ -52,20 +45,15 @@ struct PeImage {
   gaddr image_base = 0;
   uint32_t image_size = 0;
   gaddr entry = 0;
-  uint16_t characteristics = 0;
-  uint32_t stack_reserve = 0, stack_commit = 0;
-  uint32_t heap_reserve = 0, heap_commit = 0;
+  uint32_t stack_reserve = 0;
   std::vector<PeSection> sections;
   std::vector<PeImport> imports;
-  std::vector<PeExport> exports;
   PeTls tls;
   bool has_tls = false;
 
   // Reads the file and maps headers and sections into mem. Returns false
   // and fills err on failure.
   bool Load(const std::string& path, GuestMemory& mem, std::string* err);
-
-  const PeImport* ImportByThunk(gaddr thunk) const;
 };
 
 }  // namespace ds1

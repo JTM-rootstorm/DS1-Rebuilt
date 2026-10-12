@@ -36,11 +36,6 @@ std::string FolderFor(uint32_t csidl) {
   }
 }
 
-void MakeHostDirs(const std::string& host) {
-  for (size_t i = 1; i <= host.size(); i++)
-    if (i == host.size() || host[i] == '/') mkdir(host.substr(0, i).c_str(), 0755);
-}
-
 HLE("shfolder.dll", SHGetFolderPathA, 5) {
   uint32_t csidl = Arg(c, 1), out = Arg(c, 4);
   std::string p = FolderFor(csidl);
@@ -49,7 +44,7 @@ HLE("shfolder.dll", SHGetFolderPathA, 5) {
     return 0x80070057;  // E_INVALIDARG
   }
   // Create it on the host either way: Windows has these folders.
-  MakeHostDirs(HostPath(p));
+  MakeDirs(HostPath(p));
   PutStr(out, p);
   return 0;  // S_OK
 }
@@ -61,7 +56,7 @@ HLE("shfolder.dll", SHGetFolderPathW, 5) {
     WarnF("SHGetFolderPathW(CSIDL %X): unknown folder\n", csidl);
     return 0x80070057;
   }
-  MakeHostDirs(HostPath(p));
+  MakeDirs(HostPath(p));
   for (size_t i = 0; i <= p.size(); i++)
     Wr16(out + 2 * uint32_t(i), uint8_t(p.c_str()[i]));
   return 0;

@@ -1,6 +1,5 @@
 #include "program.h"
 
-#include <cstdio>
 #include <fstream>
 #include <sstream>
 

@@ -1,5 +1,6 @@
 #pragma once
-// Generator for tests/lift_x87_test.cpp; see x87test.cpp.
+// Generators for tests/lift_x87_test.cpp and tests/lift_int_test.cpp; see
+// x87test.cpp.
 
 #include <string>
 

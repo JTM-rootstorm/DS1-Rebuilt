@@ -56,11 +56,7 @@ struct FindObject : KObject {
 
 uint32_t g_std_handles[3];
 
-std::string UserDataRoot() {
-  const char* x = std::getenv("XDG_DATA_HOME");
-  std::string base = x && *x ? x : std::string(std::getenv("HOME")) + "/.local/share";
-  return base + "/ds1/drive_c";
-}
+std::string UserDataRoot() { return DataDir() + "/drive_c"; }
 
 // Splits a normalised guest path ("C:\a\b") into components after the drive.
 std::vector<std::string> Components(const std::string& p) {
@@ -267,10 +263,7 @@ HLE("kernel32.dll", CreateFileA, 7) {
   }
   if (flags & O_CREAT) {
     // Make sure the parent exists in the per-user tree.
-    std::string dir = path.substr(0, path.find_last_of('/'));
-    std::string cmd;
-    for (size_t i = 1; i <= dir.size(); i++)
-      if (i == dir.size() || dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0755);
+    MakeDirs(path.substr(0, path.find_last_of('/')));
   }
   int fd = open(path.c_str(), flags | O_CLOEXEC, 0644);
   if (fd < 0) {
@@ -411,10 +404,7 @@ HLE("kernel32.dll", MoveFileA, 2) {
 
 HLE("kernel32.dll", CreateDirectoryA, 2) {
   std::string path = HostPath(GStr(Arg(c, 0)));
-  std::string dir = path.substr(0, path.find_last_of('/'));
-  for (size_t i = 1; i < dir.size(); i++)
-    if (dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0755);
-  mkdir(dir.c_str(), 0755);
+  MakeDirs(path.substr(0, path.find_last_of('/')));
   if (mkdir(path.c_str(), 0755) != 0) {
     SetLastError(errno == EEXIST ? kErrorAlreadyExists : ErrnoToWin(errno));
     return 0;

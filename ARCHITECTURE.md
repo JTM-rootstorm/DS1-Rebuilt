@@ -114,9 +114,9 @@ integer + x87 only, ~190 mnemonics, few SEH frames, so a purpose-built
 lifter is tractable (rexglue-style: one C++ function per guest function).
 
 - Decoder: Zydis (vendored via CMake FetchContent), build-time only.
-- Function list: Ghidra functions.tsv + all FuBi exports + a manifest
-  (TOML) for overrides: extra entries, jump tables Ghidra misses,
-  no-return functions, functions to replace with host code.
+- Function list: Ghidra functions.tsv + all FuBi exports + a line-based
+  manifest (lifter.manifest) for overrides: extra entries, names, entry
+  probes, SEH resume sites.
 - Output is plain C++20: no x86 intrinsics, no inline asm, no
   `long double`, no reliance on host FPU state.
 - Context: `struct Ctx { u32 eax..edi, esp, eflags; X87 fpu; fs base }`,

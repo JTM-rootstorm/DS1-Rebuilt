@@ -25,6 +25,77 @@ bool IsSegOrAddrPrefix(uint8_t b) {
          b == 0x65 || b == 0x67;
 }
 
+// Appends raw[0, end) to *b without segment and address-size prefixes.
+void CopyNoSegPrefixes(const uint8_t* raw, const ZydisDecodedInstruction& d, int end,
+                       std::vector<uint8_t>* b) {
+  for (int i = 0; i < end; i++)
+    if (i >= d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b->push_back(raw[i]);
+}
+
+// Lifts each snippet (bytes, then ret) at its own `slot`-byte slot of a
+// scratch program. Returns the C++ (prologue, declarations, functions) and
+// each snippet's address in *vas.
+std::string LiftSnippets(const Decoder& dec, const char* prologue,
+                         const std::vector<std::pair<const std::vector<uint8_t>*, uint32_t>>& code,
+                         std::vector<uint32_t>* vas) {
+  Program q;
+  if (!q.mem.Reserve()) return {};
+  const uint32_t base = 0x00401000;
+  uint32_t size = 0x1000;
+  for (const auto& [bytes, slot] : code) size += slot;
+  q.mem.Commit(base, size, ds1::Prot::RWX);
+  q.text_lo = base;
+  q.text_hi = base + size;
+  uint32_t va = base;
+  for (const auto& [bytes, slot] : code) {
+    for (size_t i = 0; i < bytes->size(); i++) q.mem.write<uint8_t>(va + uint32_t(i), (*bytes)[i]);
+    q.mem.write<uint8_t>(va + uint32_t(bytes->size()), 0xC3);  // ret
+    q.entries.insert(va);
+    vas->push_back(va);
+    va += slot;
+  }
+  Emitter em(q, dec);
+  std::string body;
+  std::set<uint32_t> refs;
+  EmitStats st;
+  for (uint32_t sva : *vas) {
+    Function f;
+    BuildFunction(q, dec, sva, &f);
+    em.EmitFunction(f, &body, &refs, &st);
+  }
+  std::string o = prologue;
+  char buf[64];
+  for (uint32_t sva : *vas) {
+    std::snprintf(buf, sizeof buf, "void f_%08X(::ds1::Ctx& c);\n", sva);
+    o += buf;
+  }
+  return o + body + "}  // namespace ds1::gen\n\n";
+}
+
+// "0x12,0x34," and a disassembly safe inside a C string literal.
+std::string HexBytes(const std::vector<uint8_t>& bytes) {
+  std::string s;
+  char h[8];
+  for (uint8_t x : bytes) {
+    std::snprintf(h, sizeof h, "0x%02X,", x);
+    s += h;
+  }
+  return s;
+}
+std::string Literal(std::string text) {
+  for (char& ch : text)
+    if (ch == '"' || ch == '\\') ch = '\'';
+  return text;
+}
+
+int WriteFile(const std::string& path, const std::string& s) {
+  FILE* fp = std::fopen(path.c_str(), "wb");
+  if (!fp) return 1;
+  std::fwrite(s.data(), 1, s.size(), fp);
+  std::fclose(fp);
+  return 0;
+}
+
 struct Form {
   std::vector<uint8_t> bytes;
   std::string text;
@@ -54,9 +125,7 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
       int mem_bytes = 0;
       bool has_modrm = in.d.attributes & ZYDIS_ATTRIB_HAS_MODRM;
       int modrm_off = has_modrm ? in.d.raw.modrm.offset : in.d.length;
-      for (int i = 0; i < modrm_off; i++)
-        if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i]))
-          b.push_back(raw[i]);
+      CopyNoSegPrefixes(raw, in.d, modrm_off, &b);
       if (has_modrm) {
         if (in.d.raw.modrm.mod == 3) {
           b.push_back(raw[modrm_off]);
@@ -103,75 +172,35 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
       sq.text += (i ? "; " : "") + fm->text;
       sq.mem_bytes = std::max(sq.mem_bytes, fm->mem_bytes);
     }
-    sq.example_va = 0;
     seqs.push_back(sq);
   }
 
-  // A scratch program holding each form (16-byte slots) and sequence
-  // (128-byte slots), each followed by ret.
-  Program q;
-  if (!q.mem.Reserve()) return 1;
-  const uint32_t base = 0x00401000;
-  uint32_t size = uint32_t(forms.size()) * 16 + uint32_t(seqs.size()) * 128 + 0x1000;
-  q.mem.Commit(base, size, ds1::Prot::RWX);
-  q.text_lo = base;
-  q.text_hi = base + size;
-  std::vector<std::pair<uint32_t, const Form*>> slots;
-  uint32_t va = base;
-  auto place = [&](const Form& fm, uint32_t step) {
-    std::vector<uint8_t> code = fm.bytes;
-    code.push_back(0xC3);  // ret
-    for (size_t i = 0; i < code.size(); i++) q.mem.write<uint8_t>(va + uint32_t(i), code[i]);
-    q.entries.insert(va);
-    slots.push_back({va, &fm});
-    va += step;
-  };
-  for (const auto& [k, fm] : forms) place(fm, 16);
-  for (const auto& fm : seqs) place(fm, 128);
-
-  Emitter em(q, dec);
-  std::string body;
-  std::set<uint32_t> refs;
-  EmitStats st;
-  for (const auto& [sva, fm] : slots) {
-    Function f;
-    BuildFunction(q, dec, sva, &f);
-    em.EmitFunction(f, &body, &refs, &st);
+  // Forms in 16-byte slots, sequences in 128-byte ones.
+  std::vector<const Form*> all;
+  std::vector<std::pair<const std::vector<uint8_t>*, uint32_t>> code;
+  for (const auto& [k, fm] : forms) {
+    all.push_back(&fm);
+    code.push_back({&fm.bytes, 16});
   }
-
-  std::string o = prologue;
-  for (const auto& [sva, fm] : slots) {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "void f_%08X(::ds1::Ctx& c);\n", sva);
+  for (const auto& fm : seqs) {
+    all.push_back(&fm);
+    code.push_back({&fm.bytes, 128});
+  }
+  std::vector<uint32_t> vas;
+  std::string o = LiftSnippets(dec, prologue, code, &vas);
+  if (o.empty()) return 1;
+  o += "#include \"lift_x87_forms.h\"\nextern const X87Form kX87Forms[] = {\n";
+  for (size_t i = 0; i < all.size(); i++) {
+    const Form& fm = *all[i];
+    char buf[2048];
+    std::snprintf(buf, sizeof buf, "  {&ds1::gen::f_%08X, {%s}, %zu, %d, \"%s\", 0x%08X},\n",
+                  vas[i], HexBytes(fm.bytes).c_str(), fm.bytes.size(), fm.mem_bytes,
+                  Literal(fm.text).c_str(), fm.example_va);
     o += buf;
   }
-  o += body;
-  o += "}  // namespace ds1::gen\n\n#include \"lift_x87_forms.h\"\n";
-  o += "extern const X87Form kX87Forms[] = {\n";
-  for (const auto& [sva, fm] : slots) {
-    std::string bytes;
-    for (uint8_t x : fm->bytes) {
-      char h[8];
-      std::snprintf(h, sizeof h, "0x%02X,", x);
-      bytes += h;
-    }
-    std::string text = fm->text;
-    for (char& ch : text)
-      if (ch == '"' || ch == '\\') ch = '\'';
-    char head[64], tail[64];
-    std::snprintf(head, sizeof head, "  {&ds1::gen::f_%08X, {", sva);
-    std::snprintf(tail, sizeof tail, "}, %zu, %d, \"", fm->bytes.size(), fm->mem_bytes);
-    o += head + bytes + tail + text;
-    std::snprintf(tail, sizeof tail, "\", 0x%08X},\n", fm->example_va);
-    o += tail;
-  }
-  o += "};\nextern const int kX87FormCount = " + std::to_string(slots.size()) + ";\n";
-
-  FILE* fp = std::fopen(out.c_str(), "wb");
-  if (!fp) return 1;
-  std::fwrite(o.data(), 1, o.size(), fp);
-  std::fclose(fp);
-  std::printf("x87 forms: %zu (%zu sequences) -> %s\n", slots.size(), seqs.size(),
+  o += "};\nextern const int kX87FormCount = " + std::to_string(all.size()) + ";\n";
+  if (WriteFile(out, o)) return 1;
+  std::printf("x87 forms: %zu (%zu sequences) -> %s\n", all.size(), seqs.size(),
               out.c_str());
   return 0;
 }
@@ -188,7 +217,6 @@ int WriteX87Test(const Program& p, const Decoder& dec, const std::string& out,
 namespace {
 
 bool Excluded(const Insn& in) {
-  using namespace std;
   switch (in.d.meta.category) {
     case ZYDIS_CATEGORY_X87_ALU: case ZYDIS_CATEGORY_COND_BR:
     case ZYDIS_CATEGORY_UNCOND_BR: case ZYDIS_CATEGORY_CALL:
@@ -196,14 +224,17 @@ bool Excluded(const Insn& in) {
     case ZYDIS_CATEGORY_SYSTEM: case ZYDIS_CATEGORY_INTERRUPT:
     case ZYDIS_CATEGORY_IO: case ZYDIS_CATEGORY_IOSTRINGOP:
     case ZYDIS_CATEGORY_SEGOP: case ZYDIS_CATEGORY_MMX:
-    case ZYDIS_CATEGORY_SSE: case ZYDIS_CATEGORY_FLAGOP:
-      if (in.d.meta.category == ZYDIS_CATEGORY_FLAGOP &&
-          (in.d.mnemonic == ZYDIS_MNEMONIC_SAHF || in.d.mnemonic == ZYDIS_MNEMONIC_LAHF ||
-           in.d.mnemonic == ZYDIS_MNEMONIC_CLC || in.d.mnemonic == ZYDIS_MNEMONIC_STC ||
-           in.d.mnemonic == ZYDIS_MNEMONIC_CMC || in.d.mnemonic == ZYDIS_MNEMONIC_CLD ||
-           in.d.mnemonic == ZYDIS_MNEMONIC_STD))
-        return false;
+    case ZYDIS_CATEGORY_SSE:
       return true;
+    case ZYDIS_CATEGORY_FLAGOP:  // only these are comparable natively
+      switch (in.d.mnemonic) {
+        case ZYDIS_MNEMONIC_SAHF: case ZYDIS_MNEMONIC_LAHF: case ZYDIS_MNEMONIC_CLC:
+        case ZYDIS_MNEMONIC_STC: case ZYDIS_MNEMONIC_CMC: case ZYDIS_MNEMONIC_CLD:
+        case ZYDIS_MNEMONIC_STD:
+          return false;
+        default:
+          return true;
+      }
     default:
       break;
   }
@@ -297,14 +328,12 @@ int WriteIntTest(const Program& p, const Decoder& dec, const std::string& out,
             base = r;
             break;
           }
-        for (int i = 0; i < in.d.raw.prefix_count; i++)
-          if (!IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        CopyNoSegPrefixes(raw, in.d, in.d.raw.prefix_count, &b);
         b.push_back(op[in.d.opcode - 0xA0]);
         b.push_back(uint8_t((0 << 3) | base));  // reg = al/ax/eax
       } else if (string_op) {
         // Implicit [esi]/[edi]: the test points them into the buffer.
-        for (int i = 0; i < in.d.length; i++)
-          if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        CopyNoSegPrefixes(raw, in.d, in.d.length, &b);
       } else if (has_modrm && mem) {
         int reg = in.d.raw.modrm.reg;
         for (int r : {3, 6, 7, 1, 2, 0})
@@ -313,16 +342,13 @@ int WriteIntTest(const Program& p, const Decoder& dec, const std::string& out,
             break;
           }
         if (base < 0) continue;
-        int modrm_off = in.d.raw.modrm.offset;
-        for (int i = 0; i < modrm_off; i++)
-          if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        CopyNoSegPrefixes(raw, in.d, in.d.raw.modrm.offset, &b);
         b.push_back(uint8_t((reg << 3) | base));
         // Immediates follow ModRM/SIB/displacement: keep them.
         int imm_off = in.d.raw.imm[0].size ? in.d.raw.imm[0].offset : in.d.length;
         for (int i = imm_off; i < in.d.length; i++) b.push_back(raw[i]);
       } else {
-        for (int i = 0; i < in.d.length; i++)
-          if (i >= in.d.raw.prefix_count || !IsSegOrAddrPrefix(raw[i])) b.push_back(raw[i]);
+        CopyNoSegPrefixes(raw, in.d, in.d.length, &b);
         // inc/dec r32 (40-4F) are REX prefixes in 64-bit mode: use FF /0, /1.
         if (b.size() == 1 && b[0] >= 0x40 && b[0] <= 0x4F)
           b = {0xFF, uint8_t(0xC0 + (b[0] >= 0x48 ? 8 : 0) + (b[0] & 7))};
@@ -330,7 +356,6 @@ int WriteIntTest(const Program& p, const Decoder& dec, const std::string& out,
           b = {0x66, 0xFF, uint8_t(0xC0 + (b[1] >= 0x48 ? 8 : 0) + (b[1] & 7))};
       }
       if (forms.count(b)) continue;
-      // Re-decode the rewritten bytes to make sure they mean the same thing.
       IForm fm;
       fm.bytes = b;
       fm.text = dec.Format(in);
@@ -341,64 +366,28 @@ int WriteIntTest(const Program& p, const Decoder& dec, const std::string& out,
     }
   }
 
-  Program q;
-  if (!q.mem.Reserve()) return 1;
-  const uint32_t code = 0x00401000;
-  uint32_t size = uint32_t(forms.size()) * 32 + 0x1000;
-  q.mem.Commit(code, size, ds1::Prot::RWX);
-  q.text_lo = code;
-  q.text_hi = code + size;
-  std::vector<std::pair<uint32_t, const IForm*>> slots;
-  uint32_t va = code;
+  std::vector<const IForm*> all;
+  std::vector<std::pair<const std::vector<uint8_t>*, uint32_t>> code;
   for (const auto& [k, fm] : forms) {
-    std::vector<uint8_t> c = fm.bytes;
-    c.push_back(0xC3);
-    for (size_t i = 0; i < c.size(); i++) q.mem.write<uint8_t>(va + uint32_t(i), c[i]);
-    q.entries.insert(va);
-    slots.push_back({va, &fm});
-    va += 32;
+    all.push_back(&fm);
+    code.push_back({&fm.bytes, 32});
   }
-  Emitter em(q, dec);
-  std::string body;
-  std::set<uint32_t> refs;
-  EmitStats st;
-  for (const auto& [sva, fm] : slots) {
-    Function f;
-    BuildFunction(q, dec, sva, &f);
-    em.EmitFunction(f, &body, &refs, &st);
-  }
-  std::string o = prologue;
-  for (const auto& [sva, fm] : slots) {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "void f_%08X(::ds1::Ctx& c);\n", sva);
-    o += buf;
-  }
-  o += body;
-  o += "}  // namespace ds1::gen\n\n#include \"lift_int_forms.h\"\n";
-  o += "extern const IntForm kIntForms[] = {\n";
-  for (const auto& [sva, fm] : slots) {
-    std::string bytes;
-    for (uint8_t x : fm->bytes) {
-      char h[8];
-      std::snprintf(h, sizeof h, "0x%02X,", x);
-      bytes += h;
-    }
-    std::string text = fm->text;
-    for (char& ch : text)
-      if (ch == '"' || ch == '\\') ch = '\'';
+  std::vector<uint32_t> vas;
+  std::string o = LiftSnippets(dec, prologue, code, &vas);
+  if (o.empty()) return 1;
+  o += "#include \"lift_int_forms.h\"\nextern const IntForm kIntForms[] = {\n";
+  for (size_t i = 0; i < all.size(); i++) {
+    const IForm& fm = *all[i];
     char buf[512];
     std::snprintf(buf, sizeof buf,
-                  "  {&ds1::gen::f_%08X, {%s}, %zu, %d, 0x%X, \"%s\", 0x%08X},\n", sva,
-                  bytes.c_str(), fm->bytes.size(), fm->base, fm->undef, text.c_str(),
-                  fm->example_va);
+                  "  {&ds1::gen::f_%08X, {%s}, %zu, %d, 0x%X, \"%s\", 0x%08X},\n", vas[i],
+                  HexBytes(fm.bytes).c_str(), fm.bytes.size(), fm.base, fm.undef,
+                  Literal(fm.text).c_str(), fm.example_va);
     o += buf;
   }
-  o += "};\nextern const int kIntFormCount = " + std::to_string(slots.size()) + ";\n";
-  FILE* fp = std::fopen(out.c_str(), "wb");
-  if (!fp) return 1;
-  std::fwrite(o.data(), 1, o.size(), fp);
-  std::fclose(fp);
-  std::printf("integer forms: %zu -> %s\n", slots.size(), out.c_str());
+  o += "};\nextern const int kIntFormCount = " + std::to_string(all.size()) + ";\n";
+  if (WriteFile(out, o)) return 1;
+  std::printf("integer forms: %zu -> %s\n", all.size(), out.c_str());
   return 0;
 }
 

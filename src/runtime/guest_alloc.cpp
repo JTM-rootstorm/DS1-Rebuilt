@@ -277,9 +277,4 @@ uint32_t GuestHeap::Size(uint32_t p) const {
   return it == used_.end() ? UINT32_MAX : it->second.requested;
 }
 
-bool GuestHeap::Owns(uint32_t p) const {
-  std::lock_guard<std::mutex> l(mu_);
-  return used_.count(p) != 0;
-}
-
 }  // namespace ds1

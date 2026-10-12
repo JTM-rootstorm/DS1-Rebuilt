@@ -261,7 +261,7 @@ HLE("kernel32.dll", WaitForMultipleObjects, 4) {
 
 void RunThreadObject(std::shared_ptr<ThreadObject> to) {
   to->started = true;
-  StartHostThread(to->thread, to->entry, {to->param}, false);
+  StartHostThread(to->thread, to->entry, to->param);
 }
 
 HLE("kernel32.dll", CreateThread, 6) {

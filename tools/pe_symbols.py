@@ -3,7 +3,7 @@
 
 DungeonSiege.exe exports ~3200 MSVC-mangled C++ symbols (FuBi, the game's
 function binder, binds Skrit script calls through the EXE's own export table).
-This script turns them into a TSV symbol map for the lifter and for Ghidra.
+This script turns them into a TSV symbol map for the lifter.
 
 Pure Python PE parsing (no pefile dependency); demangling uses llvm-undname.
 

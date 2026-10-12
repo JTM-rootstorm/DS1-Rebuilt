@@ -14,11 +14,8 @@
 
 namespace ds1 {
 
-// Processors reported to the game (PEB, GetSystemInfo). Guest threads run
-// truly in parallel on the host, so this must never say 1: with one CPU
-// the game installs lock functions built on plain inc/dec (atomic only on
-// a uniprocessor), which raced and corrupted its handle lists (hang at the
-// end of the opening cinematic). Capped: 2002 code may assume few CPUs.
+// Processors reported to the game (PEB, GetSystemInfo): never 1, see
+// FINDINGS.md "New-game freeze".
 uint32_t GuestProcessorCount();
 
 // Fixed guest layout (see ARCHITECTURE.md). TEBs grow down from kTebTop.
@@ -34,7 +31,6 @@ struct Process {
   PeImage img;
   GuestAllocator vm;     // VirtualAlloc-style regions
   std::string game_dir;  // host path of the game install, no trailing '/'
-  std::string guest_dir; // the same directory as the game sees it
   std::string game_args; // appended to the guest command line
   uint32_t process_heap = 0;
   uint32_t cmdline_a = 0, cmdline_w = 0;
@@ -78,6 +74,15 @@ int RunProcess(const std::string& exe_path, const std::string& game_dir,
 // Creates the guest-side structures of a thread (TEB, TLS, stack) and
 // initialises its Ctx. Does not start it.
 Thread* CreateGuestThread(uint32_t stack_size);
+
+// Per-user data directory: $XDG_DATA_HOME/ds1, else ~/.local/share/ds1
+// (settings, saves, the guest's C: drive, crash and hang reports).
+std::string DataDir();
+// Creates `path` and any missing parents (mkdir -p).
+void MakeDirs(const std::string& path);
+// A new report file name, e.g. ReportPath("crash") is
+// DataDir()/crashes/crash-<time>-<pid>.txt; creates the directory.
+std::string ReportPath(const char* kind);
 
 // Runs host function fn on a new detached host thread bound to guest thread
 // t (from CreateGuestThread), so fn may CallGuest(t->ctx, ...).

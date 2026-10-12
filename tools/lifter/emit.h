@@ -28,16 +28,12 @@ class Emitter {
   void EmitFunction(const Function& f, std::string* out,
                     std::set<uint32_t>* refs, EmitStats* stats);
 
-  // Straight-line x87 code becomes guarded runs (on by default).
-  void set_x87_runs(bool on) { x87_runs_ = on; }
-
  private:
   std::map<uint32_t, uint32_t> FindX87Runs(const Function& f,
                                            const std::set<uint32_t>& labels) const;
   void EmitX87Run(const Function& f, std::map<uint32_t, Insn>::const_iterator first,
                   std::map<uint32_t, Insn>::const_iterator last, std::string* out,
                   std::set<uint32_t>* refs, EmitStats* stats) const;
-  bool x87_runs_ = true;
   const Program& p_;
   const Decoder& dec_;
 };

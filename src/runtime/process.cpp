@@ -3,11 +3,16 @@
 
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <ucontext.h>
 
 #include <thread>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <map>
 #include <memory>
@@ -47,7 +52,29 @@ Thread* CurrentThread() { return t_current; }
 
 uint32_t GuestProcessorCount() {
   unsigned n = std::thread::hardware_concurrency();
-  return std::clamp<unsigned>(n, 2, 8);
+  return std::clamp<unsigned>(n, 2, 8);  // capped: 2002 code may assume few
+}
+
+std::string DataDir() {
+  if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x)
+    return std::string(x) + "/ds1";
+  if (const char* h = std::getenv("HOME"); h && *h)
+    return std::string(h) + "/.local/share/ds1";
+  return "/tmp/ds1";
+}
+
+void MakeDirs(const std::string& path) {
+  for (size_t i = 1; i <= path.size(); i++)
+    if (i == path.size() || path[i] == '/') mkdir(path.substr(0, i).c_str(), 0755);
+}
+
+std::string ReportPath(const char* kind) {
+  std::string dir = DataDir() + "/" + kind + "s";
+  MakeDirs(dir);
+  char name[64];
+  std::snprintf(name, sizeof name, "/%s-%ld-%d.txt", kind, long(std::time(nullptr)),
+                int(getpid()));
+  return dir + name;
 }
 
 std::string GStr(uint32_t va) {
@@ -142,60 +169,48 @@ Thread* CreateGuestThread(uint32_t stack_size) {
   return raw_t;
 }
 
-Thread* FindThread(uint32_t tid) {
-  std::lock_guard<std::mutex> l(g_threads_mu);
-  auto it = g_threads.find(tid);
-  return it == g_threads.end() ? nullptr : it->second.get();
-}
-
-struct HostThreadStart {
-  Thread* t;
-  uint32_t entry;
-  std::vector<uint32_t> args;
-  uint32_t exit_code = 0;
-};
-
-static void* HostThreadMain(void* arg) {
-  auto* s = static_cast<HostThreadStart*>(arg);
-  t_current = s->t;
+// Runs guest function `entry` (with no argument, as the process entry
+// point, or with `param`) on the calling host thread as guest thread t.
+// Returns its exit code.
+static uint32_t RunGuestThread(Thread* t, uint32_t entry,
+                               const uint32_t* param) {
+  t_current = t;
   InstallSignalStack();
-  RegisterGuestHostThread("guest", s->t->tid);
-  Ctx& c = s->t->ctx;
-  uint32_t r = 0;
+  RegisterGuestHostThread("guest", t->tid);
+  uint32_t r;
   try {
-    switch (s->args.size()) {
-      case 0: r = CallGuest(c, s->entry, {}); break;
-      case 1: r = CallGuest(c, s->entry, {s->args[0]}); break;
-      default: FatalF("thread start with %zu args", s->args.size());
-    }
+    r = param ? CallGuest(t->ctx, entry, {*param}) : CallGuest(t->ctx, entry, {});
   } catch (const GuestThreadExit& e) {
     r = e.code;
   }
-  s->exit_code = r;
-  OnGuestThreadFinished(s->t->tid, r);
-  return nullptr;
+  OnGuestThreadFinished(t->tid, r);
+  return r;
 }
 
-// Runs `entry(args)` on a new host thread bound to guest thread t. If
-// `join`, waits and returns the guest return value.
-uint32_t StartHostThread(Thread* t, uint32_t entry,
-                         std::vector<uint32_t> args, bool join) {
-  auto* s = new HostThreadStart{t, entry, std::move(args)};
+// Starts fn(arg) on a new detached host thread with the big guest stack.
+static void SpawnHostThread(void* (*fn)(void*), void* arg) {
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, kHostStack);
   pthread_t th;
-  if (pthread_create(&th, &attr, HostThreadMain, s) != 0)
-    FatalF("pthread_create failed");
+  if (pthread_create(&th, &attr, fn, arg) != 0) FatalF("pthread_create failed");
   pthread_attr_destroy(&attr);
-  if (!join) {
-    pthread_detach(th);
-    return 0;
-  }
-  pthread_join(th, nullptr);
-  uint32_t r = s->exit_code;
-  delete s;
-  return r;
+  pthread_detach(th);
+}
+
+struct ThreadStart {
+  Thread* t;
+  uint32_t entry, param;
+};
+
+static void* GuestThreadMain(void* arg) {
+  std::unique_ptr<ThreadStart> s(static_cast<ThreadStart*>(arg));
+  RunGuestThread(s->t, s->entry, &s->param);
+  return nullptr;
+}
+
+void StartHostThread(Thread* t, uint32_t entry, uint32_t param) {
+  SpawnHostThread(GuestThreadMain, new ThreadStart{t, entry, param});
 }
 
 // A host-driven thread that may call into guest code (Miles' service
@@ -218,15 +233,7 @@ static void* ServiceThreadMain(void* arg) {
 }
 
 void StartServiceThread(Thread* t, std::function<void()> fn) {
-  auto* s = new ServiceStart{t, std::move(fn)};
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, kHostStack);
-  pthread_t th;
-  if (pthread_create(&th, &attr, ServiceThreadMain, s) != 0)
-    FatalF("pthread_create failed");
-  pthread_attr_destroy(&attr);
-  pthread_detach(th);
+  SpawnHostThread(ServiceThreadMain, new ServiceStart{t, std::move(fn)});
 }
 
 // The guest main thread runs on the process main thread (SDL, and Cocoa on
@@ -234,26 +241,28 @@ void StartServiceThread(Thread* t, std::function<void()> fn) {
 // with makecontext/swapcontext.
 namespace {
 ucontext_t g_host_main_ctx, g_guest_main_ctx;
-HostThreadStart* g_main_start = nullptr;
+Thread* g_main_thread = nullptr;
+uint32_t g_main_entry = 0, g_main_exit = 0;
 
-void GuestMainTrampoline() { HostThreadMain(g_main_start); }
+void GuestMainTrampoline() {
+  g_main_exit = RunGuestThread(g_main_thread, g_main_entry, nullptr);
+}
 }  // namespace
 
 static uint32_t RunOnMainThread(Thread* t, uint32_t entry) {
   void* stack = mmap(nullptr, kHostStack, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (stack == MAP_FAILED) FatalF("cannot allocate the main guest stack");
-  g_main_start = new HostThreadStart{t, entry, {}};
+  g_main_thread = t;
+  g_main_entry = entry;
   getcontext(&g_guest_main_ctx);
   g_guest_main_ctx.uc_stack.ss_sp = stack;
   g_guest_main_ctx.uc_stack.ss_size = kHostStack;
   g_guest_main_ctx.uc_link = &g_host_main_ctx;  // resume here on return
   makecontext(&g_guest_main_ctx, GuestMainTrampoline, 0);
   swapcontext(&g_host_main_ctx, &g_guest_main_ctx);
-  uint32_t r = g_main_start->exit_code;
-  delete g_main_start;
   munmap(stack, kHostStack);
-  return r;
+  return g_main_exit;
 }
 
 int RunProcess(const std::string& exe_path, const std::string& game_dir,
@@ -262,7 +271,6 @@ int RunProcess(const std::string& exe_path, const std::string& game_dir,
   Process& p = *g_proc;
   p.game_dir = game_dir;
   p.game_args = game_args;
-  p.guest_dir = kGuestGameDir;
   StartWatchdog();
   if (!p.mem.Reserve()) FatalF("cannot reserve the guest arena");
   g_guest_base = p.mem.base();

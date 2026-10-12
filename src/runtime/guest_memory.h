@@ -25,7 +25,6 @@ class GuestMemory {
   static constexpr uint32_t kPageSize = 0x1000;  // guest (Win32) page
 
   bool Reserve();
-  void Release();
 
   // Commit [va, va+size) rounded out to guest pages; newly committed pages
   // read as zero. Protect fails if any page in the range is uncommitted,
@@ -39,7 +38,6 @@ class GuestMemory {
   Prot QueryProt(gaddr va) const;
 
   uint8_t* base() const { return base_; }
-  size_t host_page_size() const { return host_page_; }
 
   template <typename T = uint8_t>
   T* ptr(gaddr va) const {

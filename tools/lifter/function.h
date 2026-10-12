@@ -61,8 +61,12 @@ class Decoder {
 Flow Classify(const Program& p, const Function& f, const Insn& in,
               uint32_t* target);
 
-bool BuildFunction(const Program& p, const Decoder& dec, uint32_t entry,
+void BuildFunction(const Program& p, const Decoder& dec, uint32_t entry,
                    Function* out);
+
+// A direct branch target that is another (strong) function entry: reached
+// by a tail call, not lifted into f. See Program::weak.
+bool IsOtherEntry(const Program& p, const Function& f, uint32_t t);
 
 // Absolute target of a relative branch/call operand.
 uint32_t RelTarget(const Insn& in);

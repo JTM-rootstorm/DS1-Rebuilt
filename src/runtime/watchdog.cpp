@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -12,11 +11,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "runtime/runtime.h"
 
 namespace ds1 {
 
@@ -82,25 +82,8 @@ void OnDumpSignal(int) {
   g_dump_done.store(true);
 }
 
-std::string DumpPath() {
-  std::string dir;
-  if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x)
-    dir = std::string(x) + "/ds1";
-  else if (const char* h = std::getenv("HOME"))
-    dir = std::string(h) + "/.local/share/ds1";
-  else
-    dir = "/tmp/ds1";
-  mkdir(dir.c_str(), 0755);
-  dir += "/hangs";
-  mkdir(dir.c_str(), 0755);
-  char name[64];
-  std::snprintf(name, sizeof name, "/hang-%ld-%d.txt", long(std::time(nullptr)),
-                int(getpid()));
-  return dir + name;
-}
-
 void Dump(const char* what, double stalled) {
-  std::string path = DumpPath();
+  std::string path = ReportPath("hang");
   int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
   if (fd < 0) return;
   char buf[256];

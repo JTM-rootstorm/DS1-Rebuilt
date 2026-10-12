@@ -13,8 +13,6 @@
 #include <chrono>
 #include <cstdarg>
 #include <fcntl.h>
-#include <sys/stat.h>
-#include <ctime>
 #include <string>
 #include <cstdio>
 #include <cstdlib>
@@ -87,26 +85,13 @@ void FatalF(const char* fmt, ...) {
     backtrace_symbols_fd(frames, nf, 2);
   };
   report();
-  std::string dir;
-  if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x)
-    dir = std::string(x) + "/ds1";
-  else if (const char* h = std::getenv("HOME"))
-    dir = std::string(h) + "/.local/share/ds1";
-  if (!dir.empty()) {
-    mkdir(dir.c_str(), 0755);
-    dir += "/crashes";
-    mkdir(dir.c_str(), 0755);
-    char name[64];
-    std::snprintf(name, sizeof name, "/crash-%ld-%d.txt", long(std::time(nullptr)),
-                  int(getpid()));
-    std::string path = dir + name;
-    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-    if (fd >= 0) {
-      std::fprintf(stderr, "  (report saved to %s)\n", path.c_str());
-      std::fflush(stderr);
-      dup2(fd, 2);
-      report();
-    }
+  std::string path = ReportPath("crash");
+  int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd >= 0) {
+    std::fprintf(stderr, "  (report saved to %s)\n", path.c_str());
+    std::fflush(stderr);
+    dup2(fd, 2);
+    report();
   }
   std::_Exit(3);
 }
@@ -147,8 +132,6 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
   char buf[256];
   uintptr_t a = reinterpret_cast<uintptr_t>(si->si_addr);
   uintptr_t base = reinterpret_cast<uintptr_t>(g_guest_base);
-  // Guest access violations go to the guest's SEH chain first: the game
-  // commits demand-paged resource memory from an exception filter.
   if (a - base < (1ull << 32) && CurrentThread() &&
       t_fault_depth < kMaxFaultDepth && hle::t_hle_depth == 0) {
     bool write = false;
@@ -220,8 +203,6 @@ void InitDispatch() {
 }
 
 void Dispatch(Ctx& c, uint32_t target, uint32_t va) {
-  if (va == 0x40A0A3u || va == 0x0u)
-    DS1_TRACE("  dispatch %08X from %08X\n", target, va);
   if (target - g_text_lo < g_text_size) {
     if (GuestFn fn = g_table[target - g_text_lo]) {
       fn(c);
@@ -254,8 +235,8 @@ void Unreachable(Ctx& c, uint32_t va) {
 
 void Trap(Ctx& c, uint32_t va) {
   (void)c;
-  // int3 in shipped code is an assert/DebugBreak. Raising
-  // EXCEPTION_BREAKPOINT through SEH is M2 work; stop loudly for now.
+  // int3 in shipped code is an assert/DebugBreak. EXCEPTION_BREAKPOINT
+  // is not raised through SEH (no game path has needed it); stop loudly.
   FatalF("breakpoint/trap instruction at %08X", va);
 }
 

@@ -45,12 +45,6 @@ bool GuestMemory::Reserve() {
   return true;
 }
 
-void GuestMemory::Release() {
-  if (base_) munmap(base_, kSize);
-  base_ = nullptr;
-  pages_.clear();
-}
-
 void GuestMemory::HostRange(gaddr va, uint32_t size, uint64_t* start,
                             uint64_t* end) const {
   uint64_t mask = host_page_ - 1;

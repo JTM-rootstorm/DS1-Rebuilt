@@ -12,7 +12,6 @@
 // functions are emitted into generated/ds1_gen_NNN.cpp plus a table file.
 
 #include <cstdio>
-#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -108,15 +107,10 @@ int main(int argc, char** argv) {
   }
   lifter::Decoder dec;
 
-  // --x87-test OUT: lifted x87 forms for tests/lift_x87_test.cpp.
-  if (!int_test.empty()) {
-    std::string pro = kFilePrologue;
-    return lifter::WriteIntTest(p, dec, int_test, pro.c_str());
-  }
-  if (!x87_test.empty()) {
-    std::string pro = kFilePrologue;
-    return lifter::WriteX87Test(p, dec, x87_test, pro.c_str());
-  }
+  // --int-test / --x87-test OUT: lifted instruction forms for
+  // tests/lift_int_test.cpp and tests/lift_x87_test.cpp.
+  if (!int_test.empty()) return lifter::WriteIntTest(p, dec, int_test, kFilePrologue);
+  if (!x87_test.empty()) return lifter::WriteX87Test(p, dec, x87_test, kFilePrologue);
 
   // --dump VA: show decoded operands of one function, for debugging the
   // emitter against Zydis' operand model.

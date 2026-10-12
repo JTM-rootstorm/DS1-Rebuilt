@@ -49,8 +49,8 @@ struct GuestThreadExit {
 void OnGuestThreadFinished(uint32_t tid, uint32_t code);
 
 struct Thread;
-Thread* FindThread(uint32_t tid);
-uint32_t StartHostThread(Thread* t, uint32_t entry, std::vector<uint32_t> args,
-                         bool join);
+// Runs guest function entry(param) on a new detached host thread bound to
+// guest thread t.
+void StartHostThread(Thread* t, uint32_t entry, uint32_t param);
 
 }  // namespace ds1

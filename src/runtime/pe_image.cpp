@@ -8,7 +8,6 @@ namespace ds1 {
 
 namespace {
 
-constexpr uint32_t kScnMemExecute = 0x20000000;
 constexpr uint32_t kScnMemWrite = 0x80000000;
 
 template <typename T>
@@ -50,7 +49,6 @@ bool PeImage::Load(const std::string& path, GuestMemory& mem,
     return false;
   }
   uint16_t nsec = Rd<uint16_t>(d, pe + 6);
-  characteristics = Rd<uint16_t>(d, pe + 22);
   uint16_t opt_size = Rd<uint16_t>(d, pe + 20);
   size_t oh = pe + 24;
   if (Rd<uint16_t>(d, oh) != 0x10B) {
@@ -62,9 +60,6 @@ bool PeImage::Load(const std::string& path, GuestMemory& mem,
   image_size = Rd<uint32_t>(d, oh + 56);
   uint32_t headers_size = Rd<uint32_t>(d, oh + 60);
   stack_reserve = Rd<uint32_t>(d, oh + 72);
-  stack_commit = Rd<uint32_t>(d, oh + 76);
-  heap_reserve = Rd<uint32_t>(d, oh + 80);
-  heap_commit = Rd<uint32_t>(d, oh + 84);
   entry += image_base;
   auto dir = [&](int i) {
     return std::pair<uint32_t, uint32_t>{Rd<uint32_t>(d, oh + 96 + i * 8),
@@ -127,34 +122,12 @@ bool PeImage::Load(const std::string& path, GuestMemory& mem,
     }
   }
 
-  auto [exp_rva, exp_size] = dir(0);
-  if (exp_size) {
-    gaddr e = image_base + exp_rva;
-    uint32_t ord_base = mem.read<uint32_t>(e + 16);
-    uint32_t nfuncs = mem.read<uint32_t>(e + 20);
-    uint32_t nnames = mem.read<uint32_t>(e + 24);
-    gaddr funcs = image_base + mem.read<uint32_t>(e + 28);
-    gaddr names = image_base + mem.read<uint32_t>(e + 32);
-    gaddr ords = image_base + mem.read<uint32_t>(e + 36);
-    std::vector<std::string> by_index(nfuncs);
-    for (uint32_t i = 0; i < nnames; i++) {
-      uint16_t idx = mem.read<uint16_t>(ords + i * 2);
-      if (idx < nfuncs)
-        by_index[idx] = CStr(mem, image_base + mem.read<uint32_t>(names + i * 4));
-    }
-    for (uint32_t i = 0; i < nfuncs; i++) {
-      uint32_t rva = mem.read<uint32_t>(funcs + i * 4);
-      if (rva) exports.push_back({image_base + rva, ord_base + i, by_index[i]});
-    }
-  }
-
   auto [tls_rva, tls_size] = dir(9);
   if (tls_size) {
     gaddr t = image_base + tls_rva;
     tls.raw_start = mem.read<uint32_t>(t);
     tls.raw_end = mem.read<uint32_t>(t + 4);
     tls.index_va = mem.read<uint32_t>(t + 8);
-    tls.callbacks_va = mem.read<uint32_t>(t + 12);
     tls.zero_fill = mem.read<uint32_t>(t + 16);
     has_tls = true;
   }
@@ -163,12 +136,6 @@ bool PeImage::Load(const std::string& path, GuestMemory& mem,
   for (const auto& s : sections)
     mem.Protect(s.va, s.vsize, SectionProt(s.characteristics));
   return true;
-}
-
-const PeImport* PeImage::ImportByThunk(gaddr thunk) const {
-  if (thunk < kThunkBase || (thunk - kThunkBase) % kThunkStride) return nullptr;
-  size_t i = (thunk - kThunkBase) / kThunkStride;
-  return i < imports.size() ? &imports[i] : nullptr;
 }
 
 }  // namespace ds1

@@ -54,13 +54,11 @@ bool IsJcc(ZydisMnemonic m) {
   }
 }
 
-// A direct branch target that is another (strong) function entry is a
-// tail call; see Program::weak.
+}  // namespace
+
 bool IsOtherEntry(const Program& p, const Function& f, uint32_t t) {
   return t != f.entry && p.Splits(t);
 }
-
-}  // namespace
 
 Flow Classify(const Program& p, const Function& f, const Insn& in,
               uint32_t* target) {
@@ -109,7 +107,7 @@ Flow Classify(const Program& p, const Function& f, const Insn& in,
   return Flow::Fall;
 }
 
-bool BuildFunction(const Program& p, const Decoder& dec, uint32_t entry,
+void BuildFunction(const Program& p, const Decoder& dec, uint32_t entry,
                    Function* out) {
   Function& f = *out;
   f.entry = entry;
@@ -187,7 +185,6 @@ bool BuildFunction(const Program& p, const Decoder& dec, uint32_t entry,
         break;
     }
   }
-  return true;
 }
 
 }  // namespace lifter

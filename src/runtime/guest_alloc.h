@@ -4,8 +4,7 @@
 // GuestAllocator: VirtualAlloc-style reservations (64 KiB granularity) and
 // page commits. GuestHeap: HeapAlloc-style blocks carved from reserved
 // segments. Block metadata lives on the host side, so guest overruns can't
-// corrupt the allocator (and nothing in the guest relies on heap headers;
-// if that turns out wrong, see FINDINGS.md).
+// corrupt the allocator (nothing in the guest relies on heap headers).
 
 #include <cstdint>
 #include <map>
@@ -71,7 +70,6 @@ class GuestHeap {
   uint32_t ReAlloc(uint32_t p, uint32_t size, bool zero, bool in_place_only);
   // Requested size of block p, or UINT32_MAX if p is not a live block.
   uint32_t Size(uint32_t p) const;
-  bool Owns(uint32_t p) const;
 
  private:
   struct Block {

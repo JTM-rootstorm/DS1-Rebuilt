@@ -120,7 +120,8 @@ M4 findings:
   the compositor never released (no frame callbacks). Vsync is now off by
   default and dxvk presents in mailbox mode (dxvk.tearFree = True, set in
   DXVK_CONFIG unless the user set tearFree): no tearing, never blocks; the
-  game's own 60 fps cap paces it. DS1_VSYNC=1 restores FIFO.
+  game's own 60 fps cap paces it. DS1_VSYNC=1 restores FIFO. Confirmed
+  in play: the same overshoot no longer freezes.
 - Cursor glitches on mouse-over (fixed): the game draws a software
   cursor (0x656E02) only while GetForegroundWindow is its window: save
   the pixels under it, blend a 64x64 ARGB image, Blt back. The main

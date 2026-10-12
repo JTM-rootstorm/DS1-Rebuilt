@@ -23,7 +23,6 @@ struct Object {
   virtual ~Object() = default;
   uint32_t guest = 0;  // the guest interface pointer
   uint32_t refs = 1;
-  const char* iface = "";
 };
 
 // Builds (once per name) the guest vtable for `iface` with the given

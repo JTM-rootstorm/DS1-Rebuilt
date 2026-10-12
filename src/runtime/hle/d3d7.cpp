@@ -23,18 +23,12 @@ namespace ds1::ddraw {
 
 namespace {
 
-constexpr guest::GUID kIID_IDirect3D7 = {0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
 constexpr guest::GUID kIID_IDirect3DDevice7 = {0xf5049e79, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
 constexpr guest::GUID kIID_IDirect3DHALDevice = {0x84E63dE0, 0x46AA, 0x11CF, {0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E}};
 constexpr guest::GUID kIID_IDirect3DTnLHalDevice = {0xf5049e78, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
 
 constexpr uint32_t D3D_OK = 0;
 constexpr uint32_t D3DERR_INVALIDCALL = 0x8876086C;
-
-template <typename T>
-T* G(uint32_t va) {
-  return reinterpret_cast<T*>(GPtr(va));
-}
 
 struct Direct3D : com::Object {
   uint32_t ddraw = 0;  // owning IDirectDraw7 guest pointer
@@ -192,7 +186,6 @@ void InitDefaults(Device& d) {
 
 uint32_t D3D7For(uint32_t dd) {
   auto d3d = std::make_shared<Direct3D>();
-  d3d->iface = "IDirect3D7";
   d3d->ddraw = dd;
   com::AddRef(dd);
   return com::Publish(d3d, Direct3DVtable());
@@ -258,7 +251,7 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::EnumZBufferFormats", D3D7_EnumZBufferFormats
   uint32_t cb = Arg(c, 2), ctx = Arg(c, 3);
   uint32_t pf = HeapAllocProcess(sizeof(guest::DDPIXELFORMAT), true);
   for (gfx::Format f : {gfx::Format::D16, gfx::Format::D24X8, gfx::Format::D24S8}) {
-    PixelFormatFromFormat(f, reinterpret_cast<guest::DDPIXELFORMAT*>(GPtr(pf)));
+    PixelFormatFromFormat(f, G<guest::DDPIXELFORMAT>(pf));
     if (!CallGuest(c, cb, {pf, ctx})) break;
   }
   FindHeap(g_proc->process_heap)->Free(pf);
@@ -274,7 +267,6 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::CreateDevice", D3D7_CreateDevice, 4) {
   Surface* t = com::As<Surface>(surf);
   if (!t) return D3DERR_INVALIDCALL;
   auto d = std::make_shared<Device>();
-  d->iface = "IDirect3DDevice7";
   d->d3d = Arg(c, 0);
   d->tnl = com::GuidEq(iid, kIID_IDirect3DTnLHalDevice);
   d->target = t;
@@ -284,9 +276,8 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::CreateDevice", D3D7_CreateDevice, 4) {
   InitDefaults(*d);
   d->rs[7] = t->zbuffer ? 1 : 0;
   d->viewport = {0, 0, uint32_t(t->width), uint32_t(t->height), 0.0f, 1.0f};
-  gfx::Device* g = Gfx();
   BindTarget(*d);
-  g->SetViewport({0, 0, uint32_t(t->width), uint32_t(t->height), 0.0f, 1.0f});
+  Gfx()->SetViewport({0, 0, uint32_t(t->width), uint32_t(t->height), 0.0f, 1.0f});
   Wr32(out, com::Publish(d, DeviceVtable()));
 
   uint32_t coop = St().coop_flags;
@@ -305,7 +296,6 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::CreateDevice", D3D7_CreateDevice, 4) {
 HLE_NAMED("ddraw.dll", "IDirect3D7::CreateVertexBuffer", D3D7_CreateVertexBuffer, 4) {
   const guest::D3DVERTEXBUFFERDESC& in = *G<guest::D3DVERTEXBUFFERDESC>(Arg(c, 1));
   auto vb = std::make_shared<VertexBuffer>();
-  vb->iface = "IDirect3DVertexBuffer7";
   vb->desc = in;
   vb->stride = gfx::FvfStride(in.dwFVF);
   vb->mem = HeapAllocProcess(std::max(1u, vb->stride * in.dwNumVertices), true);
@@ -378,7 +368,7 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::EnumTextureFormats", D3DD7_EnumTexture
   using F = gfx::Format;
   for (F f : {F::A8R8G8B8, F::X8R8G8B8, F::R5G6B5, F::X1R5G5B5, F::A1R5G5B5,
               F::A4R4G4B4, F::DXT1, F::DXT2, F::DXT3, F::DXT4, F::DXT5}) {
-    PixelFormatFromFormat(f, reinterpret_cast<guest::DDPIXELFORMAT*>(GPtr(pf)));
+    PixelFormatFromFormat(f, G<guest::DDPIXELFORMAT>(pf));
     if (!CallGuest(c, cb, {pf, ctx})) break;
   }
   FindHeap(g_proc->process_heap)->Free(pf);
@@ -435,6 +425,15 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::Clear", D3DD7_Clear, 7) {
   return D3D_OK;
 }
 
+// The current matrix of a transform state; identity until set.
+guest::D3DMATRIX Transform(const Device& d, uint32_t type) {
+  guest::D3DMATRIX m{};
+  auto it = d.transforms.find(type);
+  if (it != d.transforms.end()) return it->second;
+  for (int i = 0; i < 4; i++) m.m[i][i] = 1.0f;
+  return m;
+}
+
 HLE_NAMED("ddraw.dll", "IDirect3DDevice7::SetTransform", D3DD7_SetTransform, 3) {
   Device* d = Dev(c);
   const guest::D3DMATRIX& m = *G<guest::D3DMATRIX>(Arg(c, 2));
@@ -444,24 +443,14 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::SetTransform", D3DD7_SetTransform, 3) 
 }
 
 HLE_NAMED("ddraw.dll", "IDirect3DDevice7::GetTransform", D3DD7_GetTransform, 3) {
-  Device* d = Dev(c);
-  guest::D3DMATRIX m{};
-  auto it = d->transforms.find(Arg(c, 1));
-  if (it != d->transforms.end()) {
-    m = it->second;
-  } else {
-    for (int i = 0; i < 4; i++) m.m[i][i] = 1.0f;
-  }
+  guest::D3DMATRIX m = Transform(*Dev(c), Arg(c, 1));
   std::memcpy(GPtr(Arg(c, 2)), &m, sizeof m);
   return D3D_OK;
 }
 
 HLE_NAMED("ddraw.dll", "IDirect3DDevice7::MultiplyTransform", D3DD7_MultiplyTransform, 3) {
   Device* d = Dev(c);
-  guest::D3DMATRIX a{};
-  auto it = d->transforms.find(Arg(c, 1));
-  if (it != d->transforms.end()) a = it->second;
-  else for (int i = 0; i < 4; i++) a.m[i][i] = 1.0f;
+  guest::D3DMATRIX a = Transform(*d, Arg(c, 1));
   const guest::D3DMATRIX& b = *G<guest::D3DMATRIX>(Arg(c, 2));
   // The new state is the given matrix times the current one (row-major
   // D3DMATRIX): "the multiplication order is pMatrix times State". The

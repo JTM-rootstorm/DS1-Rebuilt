@@ -24,7 +24,6 @@ enum class Format : uint32_t {
 };
 uint32_t BitsPerPixel(Format f);
 bool IsCompressed(Format f);
-bool IsDepth(Format f);
 // Bytes per row of `width` pixels (per row of 4x4 blocks if compressed).
 uint32_t RowPitch(Format f, uint32_t width);
 // Rows in the data for `height` (block rows if compressed).
@@ -72,7 +71,7 @@ class Device {
 
   // (Re)creates the swap chain: a w x h back buffer presented to the
   // window. Called on SetDisplayMode / device creation.
-  virtual bool ResetSwapChain(int w, int h, Format fmt, bool vsync) = 0;
+  virtual void ResetSwapChain(int w, int h, bool vsync) = 0;
 
   // ---- resources
   virtual TextureId CreateTexture(int w, int h, int levels, Format fmt,
@@ -92,9 +91,9 @@ class Device {
   // Copies `src_rect` of a linear image into `dst_rect` of the current
   // render target, stretching if the sizes differ. If `colorkey`, source
   // pixels equal to `key` (in the source format) are skipped.
-  virtual void Blit(const void* src, uint32_t pitch, Format fmt, int sw,
-                    int sh, const Rect& src_rect, const Rect& dst_rect,
-                    bool colorkey, uint32_t key) = 0;
+  virtual void Blit(const void* src, uint32_t pitch, Format fmt,
+                    const Rect& src_rect, const Rect& dst_rect, bool colorkey,
+                    uint32_t key) = 0;
   // Reads `r` of the current render target into linear memory.
   virtual void ReadBack(const Rect& r, void* dst, uint32_t pitch,
                         Format fmt) = 0;
@@ -134,8 +133,6 @@ class Device {
 
 // Vertex size in bytes for a D3D7 FVF code.
 uint32_t FvfStride(uint32_t fvf);
-// Number of vertices/indices consumed by `prims` primitives.
-uint32_t PrimitiveVertexCount(uint32_t prim_type, uint32_t prims);
 uint32_t PrimitiveCountFromVertices(uint32_t prim_type, uint32_t verts);
 
 std::unique_ptr<Device> CreateD3D9Device(SDL_Window* window);

@@ -48,7 +48,6 @@ constexpr const char* kProviderName = "Miles Fast 2D Positional Audio";
 struct Sample {
   uint32_t handle = 0;
   bool is3d = false;
-  bool allocated = false;
   Voice v;
   int bytes_per_frame = 0;  // of the loaded WAV
   int64_t length = 0;       // frames
@@ -80,7 +79,7 @@ struct State {
   std::string last_error;
   uint32_t error_buf = 0;
   uint32_t redist_buf = 0;
-  uint32_t file_open = 0, file_close = 0, file_seek = 0, file_read = 0;
+  uint32_t file_open = 0, file_close = 0, file_read = 0;  // no seek needed
   uint32_t driver = 0;  // HDIGDRIVER while open
   int master = 127;
   uint32_t listener = 0;
@@ -173,16 +172,22 @@ void ResetSample(Sample& s) {
   }
 }
 
+// Starts a sample's or stream's voice from frame `from`; `seq` is its
+// end-of-sample sequence number.
+void Start(Voice& v, uint32_t* seq, int64_t from) {
+  v.Seek(from);
+  v.passes = 0;
+  v.eos = false;
+  v.gains_valid_ = false;
+  v.state = Voice::State::Playing;
+  *seq = NextSeq();
+  audio::GetMixer().Add(&v);
+}
+
 void Play(Sample& s, int64_t from) {
   if (!s.v.src) return;
-  s.v.Seek(from);
-  s.v.passes = 0;
-  s.v.eos = false;
-  s.v.gains_valid_ = false;
-  s.v.state = Voice::State::Playing;
-  s.seq = NextSeq();
   s.start_pos_set = false;
-  audio::GetMixer().Add(&s.v);
+  Start(s.v, &s.seq, from);
 }
 
 // ---- service thread ------------------------------------------------------------
@@ -352,7 +357,6 @@ HLE_NAMED("mss32.dll", "_AIL_set_file_callbacks@16", AIL_set_file_callbacks, 4) 
   State& st = S();
   st.file_open = Arg(c, 0);
   st.file_close = Arg(c, 1);
-  st.file_seek = Arg(c, 2);
   st.file_read = Arg(c, 3);
   return 0;
 }
@@ -415,7 +419,6 @@ HLE_NAMED("mss32.dll", "_AIL_allocate_sample_handle@4", AIL_allocate_sample_hand
   if (!st.driver || Arg(c, 0) != st.driver) return 0;
   auto s = std::make_unique<Sample>();
   s->handle = NewBlock(st);
-  s->allocated = true;
   ResetSample(*s);
   uint32_t h = s->handle;
   st.samples[h] = std::move(s);
@@ -645,7 +648,6 @@ HLE_NAMED("mss32.dll", "_AIL_allocate_3D_sample_handle@4", AIL_allocate_3D_sampl
   auto s = std::make_unique<Sample>();
   s->handle = NewBlock(st);
   s->is3d = true;
-  s->allocated = true;
   ResetSample(*s);
   uint32_t h = s->handle;
   st.samples[h] = std::move(s);
@@ -890,15 +892,7 @@ HLE_NAMED("mss32.dll", "_AIL_close_stream@4", AIL_close_stream, 1) {
 
 HLE_NAMED("mss32.dll", "_AIL_start_stream@4", AIL_start_stream, 1) {
   std::lock_guard<std::mutex> l(Mu());
-  if (Stream* s = FindStream(Arg(c, 0), "AIL_start_stream")) {
-    s->v.Seek(0);
-    s->v.passes = 0;
-    s->v.eos = false;
-    s->v.gains_valid_ = false;
-    s->v.state = Voice::State::Playing;
-    s->seq = NextSeq();
-    audio::GetMixer().Add(&s->v);
-  }
+  if (Stream* s = FindStream(Arg(c, 0), "AIL_start_stream")) Start(s->v, &s->seq, 0);
   return 0;
 }
 

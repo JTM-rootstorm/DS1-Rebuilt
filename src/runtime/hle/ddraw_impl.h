@@ -9,12 +9,13 @@
 #include "runtime/gfx/device.h"
 #include "runtime/hle/com.h"
 #include "runtime/hle/ddraw_types.h"
+#include "runtime/runtime.h"
 
 namespace ds1::ddraw {
 
 // DDSCAPS
 enum : uint32_t {
-  DDSCAPS_ALPHA = 0x2, DDSCAPS_BACKBUFFER = 0x4, DDSCAPS_COMPLEX = 0x8,
+  DDSCAPS_BACKBUFFER = 0x4, DDSCAPS_COMPLEX = 0x8,
   DDSCAPS_FLIP = 0x10, DDSCAPS_FRONTBUFFER = 0x20,
   DDSCAPS_OFFSCREENPLAIN = 0x40, DDSCAPS_PRIMARYSURFACE = 0x200,
   DDSCAPS_SYSTEMMEMORY = 0x800, DDSCAPS_TEXTURE = 0x1000,
@@ -30,12 +31,9 @@ enum : uint32_t {
 enum : uint32_t {
   DDSD_CAPS = 0x1, DDSD_HEIGHT = 0x2, DDSD_WIDTH = 0x4, DDSD_PITCH = 0x8,
   DDSD_BACKBUFFERCOUNT = 0x20, DDSD_ZBUFFERBITDEPTH = 0x40,
-  DDSD_ALPHABITDEPTH = 0x80, DDSD_LPSURFACE = 0x800,
-  DDSD_PIXELFORMAT = 0x1000, DDSD_CKDESTOVERLAY = 0x2000,
-  DDSD_CKDESTBLT = 0x4000, DDSD_CKSRCOVERLAY = 0x8000,
+  DDSD_LPSURFACE = 0x800, DDSD_PIXELFORMAT = 0x1000,
   DDSD_CKSRCBLT = 0x10000, DDSD_MIPMAPCOUNT = 0x20000,
-  DDSD_REFRESHRATE = 0x40000, DDSD_LINEARSIZE = 0x80000,
-  DDSD_TEXTURESTAGE = 0x100000,
+  DDSD_REFRESHRATE = 0x40000,
 };
 // DDPIXELFORMAT flags
 enum : uint32_t {
@@ -44,17 +42,21 @@ enum : uint32_t {
   DDPF_STENCILBUFFER = 0x4000, DDPF_LUMINANCE = 0x20000,
 };
 
+constexpr guest::GUID kIID_IDirect3D7 = {0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
+
 constexpr uint32_t DD_OK = 0;
 constexpr uint32_t DDERR_INVALIDPARAMS = 0x80070057;
 constexpr uint32_t DDERR_NOTFOUND = 0x887600FF;
 constexpr uint32_t DDERR_UNSUPPORTED = 0x80004001;
-constexpr uint32_t DDERR_INVALIDOBJECT = 0x88760082;
 constexpr uint32_t DDERR_OUTOFVIDEOMEMORY = 0x8876017C;
-constexpr uint32_t DDERR_SURFACEBUSY = 0x887601AE;
 constexpr uint32_t DDERR_NOTLOCKED = 0x887601E6;
 constexpr uint32_t DDERR_NOCOLORKEY = 0x887600D7;
 constexpr uint32_t DDERR_INVALIDPIXELFORMAT = 0x88760091;
-constexpr uint32_t DDERR_NOZBUFFERHW = 0x8876010E;
+
+template <typename T>
+T* G(uint32_t va) {
+  return reinterpret_cast<T*>(GPtr(va));
+}
 
 gfx::Format FormatFromPixelFormat(const guest::DDPIXELFORMAT& pf);
 void PixelFormatFromFormat(gfx::Format f, guest::DDPIXELFORMAT* pf);
@@ -68,7 +70,6 @@ struct State {
   uint32_t coop_flags = 0;
   int mode_w = 0, mode_h = 0, mode_bpp = 0;
   std::unique_ptr<gfx::Device> gfx;
-  Surface* primary = nullptr;     // front buffer of the flip chain
   Surface* backbuffer = nullptr;  // first back buffer (render target)
   bool vsync = false;
 };
@@ -92,7 +93,6 @@ struct Surface : com::Object {
   bool has_ck_src = false;
   guest::DDCOLORKEY ck_src{};
   bool locked = false;
-  bool dirty_from_gpu = false;  // render target content newer than `mem`
   // Render-target pixels as handed out by Lock, to upload only what the
   // game changed on Unlock (it often locks just to wait for the GPU).
   std::vector<uint8_t> lock_snapshot;

@@ -152,39 +152,12 @@ class Mp3Source : public Source {
   }
 
   void Convert() {
-    int ch = frame_->ch_layout.nb_channels;
     if (!channels_) {
-      channels_ = std::min(ch, 2);
+      channels_ = std::min(frame_->ch_layout.nb_channels, 2);
       rate_ = frame_->sample_rate;
     }
-    int n = frame_->nb_samples;
-    pending_.resize(size_t(n) * channels_);
-    auto fmt = AVSampleFormat(frame_->format);
-    bool planar = av_sample_fmt_is_planar(fmt);
-    for (int i = 0; i < n; i++)
-      for (int c = 0; c < channels_; c++) {
-        int sc = std::min(c, ch - 1);
-        float v = 0;
-        switch (av_get_packed_sample_fmt(fmt)) {
-          case AV_SAMPLE_FMT_FLT:
-            v = planar ? reinterpret_cast<const float*>(frame_->data[sc])[i]
-                       : reinterpret_cast<const float*>(frame_->data[0])[i * ch + sc];
-            break;
-          case AV_SAMPLE_FMT_S16:
-            v = (planar ? reinterpret_cast<const int16_t*>(frame_->data[sc])[i]
-                        : reinterpret_cast<const int16_t*>(frame_->data[0])[i * ch + sc]) *
-                (1.0f / 32768.0f);
-            break;
-          case AV_SAMPLE_FMT_S32:
-            v = float(planar ? reinterpret_cast<const int32_t*>(frame_->data[sc])[i]
-                             : reinterpret_cast<const int32_t*>(frame_->data[0])[i * ch + sc]) *
-                (1.0f / 2147483648.0f);
-            break;
-          default:
-            break;
-        }
-        pending_[size_t(i) * channels_ + c] = v;
-      }
+    pending_.resize(size_t(frame_->nb_samples) * channels_);
+    ConvertFrame(frame_, channels_, pending_.data());
   }
 
   Bytes data_;
@@ -254,6 +227,26 @@ std::unique_ptr<Source> MakeMp3Source(Bytes data, std::string* err) {
   return s;
 }
 
+void ConvertFrame(const AVFrame* f, int out_ch, float* out) {
+  int ch = f->ch_layout.nb_channels;
+  auto fmt = AVSampleFormat(f->format);
+  bool planar = av_sample_fmt_is_planar(fmt);
+  auto packed = av_get_packed_sample_fmt(fmt);
+  for (int i = 0; i < f->nb_samples; i++)
+    for (int c = 0; c < out_ch; c++) {
+      int sc = std::min(c, ch - 1);
+      float v = 0;
+      if (packed == AV_SAMPLE_FMT_FLT)
+        v = planar ? reinterpret_cast<const float*>(f->data[sc])[i]
+                   : reinterpret_cast<const float*>(f->data[0])[i * ch + sc];
+      else if (packed == AV_SAMPLE_FMT_S16)
+        v = (planar ? reinterpret_cast<const int16_t*>(f->data[sc])[i]
+                    : reinterpret_cast<const int16_t*>(f->data[0])[i * ch + sc]) /
+            32768.0f;
+      out[size_t(i) * out_ch + c] = v;
+    }
+}
+
 std::unique_ptr<Source> MakeSource(Bytes data, std::string* err) {
   if (data->size() >= 12 && RiffSize(data->data()))
     return MakeWavSource(std::move(data), err);
@@ -279,11 +272,6 @@ void QueueSource::Push(const float* frames, int n) {
 void QueueSource::Finish() {
   std::lock_guard<std::mutex> l(mu_);
   finished_ = true;
-}
-
-size_t QueueSource::Queued() {
-  std::lock_guard<std::mutex> l(mu_);
-  return (q_.size() - head_) / channels_;
 }
 
 int QueueSource::Read(float* out, int n) {

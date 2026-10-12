@@ -188,12 +188,7 @@ void Mixer::TargetGains(const Voice& v, float* l, float* r) const {
 }
 
 void Mixer::MixVoice(Voice& v, float* out, int frames) {
-  if (!v.src) {
-    v.state = Voice::State::Done;
-    v.eos = true;
-    return;
-  }
-  if (!v.primed_ && !Prime(v)) {
+  if (!v.src || (!v.primed_ && !Prime(v))) {
     v.state = Voice::State::Done;
     v.eos = true;
     return;

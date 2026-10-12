@@ -31,11 +31,6 @@ bool IsCompressed(Format f) {
          f == Format::DXT4 || f == Format::DXT5;
 }
 
-bool IsDepth(Format f) {
-  return f == Format::D16 || f == Format::D24X8 || f == Format::D24S8 ||
-         f == Format::D32 || f == Format::D15S1;
-}
-
 uint32_t RowPitch(Format f, uint32_t width) {
   if (IsCompressed(f)) {
     uint32_t blocks = (width + 3) / 4;
@@ -162,17 +157,6 @@ uint32_t PrimitiveCountFromVertices(uint32_t prim, uint32_t n) {
     case 3: return n > 0 ? n - 1 : 0;     // LINESTRIP
     case 4: return n / 3;                 // TRIANGLELIST
     case 5: case 6: return n > 2 ? n - 2 : 0;  // STRIP, FAN
-    default: return 0;
-  }
-}
-
-uint32_t PrimitiveVertexCount(uint32_t prim, uint32_t prims) {
-  switch (prim) {
-    case 1: return prims;
-    case 2: return prims * 2;
-    case 3: return prims + 1;
-    case 4: return prims * 3;
-    case 5: case 6: return prims + 2;
     default: return 0;
   }
 }

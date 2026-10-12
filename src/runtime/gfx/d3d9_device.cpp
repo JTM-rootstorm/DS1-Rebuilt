@@ -12,13 +12,12 @@
 #include <windows.h>
 #include <d3d9.h>
 
-#include <SDL3/SDL.h>
-
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
-#include <vector>
+#include <string>
 
 #include "runtime/gfx/device.h"
 #include "runtime/log.h"
@@ -66,8 +65,8 @@ class D3D9Device final : public Device {
     // dxvk-native refuses to start without a WSI backend name.
     setenv("DXVK_WSI_DRIVER", "SDL3", 0);
     // Without vsync, present in mailbox mode (no tearing) rather than
-    // immediate: see ResetSwapChain's caller (ddraw Gfx()) for why vsync is
-    // off by default. A tearFree setting the user made wins.
+    // immediate (FINDINGS.md "Freeze on a quick focus flip"). A tearFree
+    // setting the user made wins.
     const char* conf = std::getenv("DXVK_CONFIG");
     if (!conf || !std::strstr(conf, "tearFree")) {
       std::string v = conf && *conf ? std::string(conf) + ";" : std::string();
@@ -88,8 +87,8 @@ class D3D9Device final : public Device {
     if (d3d_) d3d_->Release();
   }
 
-  bool ResetSwapChain(int w, int h, Format fmt, bool vsync) override {
-    (void)fmt;  // always present in X8R8G8B8; 16-bit modes convert on blit
+  // Always X8R8G8B8; 16-bit modes convert on blit.
+  void ResetSwapChain(int w, int h, bool vsync) override {
     D3DPRESENT_PARAMETERS pp{};
     pp.Windowed = TRUE;
     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
@@ -145,9 +144,6 @@ class D3D9Device final : public Device {
       dev_->ColorFill(*t, nullptr, D3DCOLOR_XRGB(0, 0, 0));
     }
     dev_->SetRenderTarget(0, backbuffer_);
-    width_ = w;
-    height_ = h;
-    return true;
   }
 
   TextureId CreateTexture(int w, int h, int levels, Format fmt,
@@ -171,8 +167,6 @@ class D3D9Device final : public Device {
   void DestroyTexture(TextureId id) override {
     auto it = textures_.find(id);
     if (it == textures_.end()) return;
-    for (auto& s : bound_)
-      if (s == id) s = 0;
     it->second->Release();
     textures_.erase(it);
   }
@@ -237,11 +231,8 @@ class D3D9Device final : public Device {
     current_depth_ = depth;
   }
 
-  void Blit(const void* src, uint32_t pitch, Format fmt, int sw, int sh,
-            const Rect& sr, const Rect& dr, bool colorkey,
-            uint32_t key) override {
-    (void)sw;
-    (void)sh;
+  void Blit(const void* src, uint32_t pitch, Format fmt, const Rect& sr,
+            const Rect& dr, bool colorkey, uint32_t key) override {
     DrawImage(src, pitch, fmt, sr, dr, colorkey, key);
   }
 
@@ -270,6 +261,143 @@ class D3D9Device final : public Device {
     if (in_scene_) EndScene();
     dev_->StretchRect(front_, nullptr, swap_, nullptr, D3DTEXF_POINT);
     dev_->Present(nullptr, nullptr, nullptr, nullptr);
+  }
+
+  void ReadBack(const Rect& r, void* dst, uint32_t pitch, Format fmt) override {
+    IDirect3DSurface9* rt = nullptr;
+    dev_->GetRenderTarget(0, &rt);
+    ReadSurface(rt, r, dst, pitch, fmt);
+    rt->Release();
+  }
+
+  void SetRenderState(uint32_t s, uint32_t v) override {
+    switch (s) {
+      case 47: {  // D3DRENDERSTATE_ZBIAS (0..16) -> DEPTHBIAS
+        float bias = -float(v) * 0.000005f;
+        uint32_t bits;
+        std::memcpy(&bits, &bias, 4);
+        dev_->SetRenderState(D3DRS_DEPTHBIAS, bits);
+        return;
+      }
+      // D3D7 states that D3D9 dropped or that have no effect here.
+      case 1: case 2: case 3: case 4: case 5: case 6: case 10: case 11:
+      case 12: case 13: case 17: case 18: case 21: case 30: case 31:
+      case 32: case 33: case 39: case 40: case 41: case 42: case 43:
+      case 44: case 45: case 46: case 49: case 50: case 138: case 144:
+        if (ignored_rs_.insert(s).second)
+          DS1_TRACE("gfx: render state %u = %u ignored\n", s, v);
+        return;
+      default:
+        dev_->SetRenderState(D3DRENDERSTATETYPE(s), v);
+    }
+  }
+
+  void SetTextureStageState(uint32_t stage, uint32_t type, uint32_t v) override {
+    switch (type) {
+      case 12:  // ADDRESS (both)
+        dev_->SetSamplerState(stage, D3DSAMP_ADDRESSU, v);
+        dev_->SetSamplerState(stage, D3DSAMP_ADDRESSV, v);
+        return;
+      case 13: dev_->SetSamplerState(stage, D3DSAMP_ADDRESSU, v); return;
+      case 14: dev_->SetSamplerState(stage, D3DSAMP_ADDRESSV, v); return;
+      case 15: dev_->SetSamplerState(stage, D3DSAMP_BORDERCOLOR, v); return;
+      case 16: {  // MAGFILTER: D3DTFG_POINT 1, LINEAR 2, cubic 3/4, ANISO 5
+        DWORD f = v == 1 ? D3DTEXF_POINT : v == 5 ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
+        dev_->SetSamplerState(stage, D3DSAMP_MAGFILTER, f);
+        return;
+      }
+      case 17: {  // MINFILTER: D3DTFN_POINT 1, LINEAR 2, ANISOTROPIC 3
+        DWORD f = v == 1 ? D3DTEXF_POINT : v == 3 ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
+        dev_->SetSamplerState(stage, D3DSAMP_MINFILTER, f);
+        return;
+      }
+      case 18: {  // MIPFILTER: D3DTFP_NONE 1, POINT 2, LINEAR 3
+        DWORD f = v == 2 ? D3DTEXF_POINT : v == 3 ? D3DTEXF_LINEAR : D3DTEXF_NONE;
+        dev_->SetSamplerState(stage, D3DSAMP_MIPFILTER, f);
+        return;
+      }
+      case 19: dev_->SetSamplerState(stage, D3DSAMP_MIPMAPLODBIAS, v); return;
+      case 20: dev_->SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, v); return;
+      case 21: dev_->SetSamplerState(stage, D3DSAMP_MAXANISOTROPY, v); return;
+      default:
+        dev_->SetTextureStageState(stage, D3DTEXTURESTAGESTATETYPE(type), v);
+    }
+  }
+
+  void SetTexture(uint32_t stage, TextureId id) override {
+    if (stage >= 8) return;
+    auto it = textures_.find(id);
+    dev_->SetTexture(stage, it == textures_.end() ? nullptr : it->second);
+  }
+
+  void SetTransform(uint32_t type, const float m[16]) override {
+    D3DTRANSFORMSTATETYPE t;
+    switch (type) {
+      case 1: t = D3DTS_WORLD; break;
+      case 4: t = D3DTS_WORLD1; break;
+      case 5: t = D3DTS_WORLD2; break;
+      case 6: t = D3DTS_WORLD3; break;
+      default: t = D3DTRANSFORMSTATETYPE(type); break;
+    }
+    dev_->SetTransform(t, reinterpret_cast<const D3DMATRIX*>(m));
+  }
+
+  void SetViewport(const Viewport& v) override {
+    D3DVIEWPORT9 vp{v.x, v.y, v.width, v.height, v.min_z, v.max_z};
+    dev_->SetViewport(&vp);
+  }
+
+  void SetMaterial(const Material& m) override {
+    static_assert(sizeof(Material) == sizeof(D3DMATERIAL9));
+    dev_->SetMaterial(reinterpret_cast<const D3DMATERIAL9*>(&m));
+  }
+
+  void SetLight(uint32_t i, const Light& l) override {
+    static_assert(sizeof(Light) == sizeof(D3DLIGHT9));
+    dev_->SetLight(i, reinterpret_cast<const D3DLIGHT9*>(&l));
+  }
+
+  void LightEnable(uint32_t i, bool e) override { dev_->LightEnable(i, e); }
+
+  void SetClipPlane(uint32_t i, const float p[4]) override {
+    dev_->SetClipPlane(i, p);
+  }
+
+  void Clear(uint32_t count, const Rect* rects, uint32_t flags, uint32_t color,
+             float z, uint32_t stencil) override {
+    static_assert(sizeof(Rect) == sizeof(D3DRECT));
+    if (!current_depth_) flags &= ~(D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL);
+    dev_->Clear(count, reinterpret_cast<const D3DRECT*>(rects), flags, color, z,
+                stencil);
+  }
+
+  void BeginScene() override {
+    if (!in_scene_) dev_->BeginScene();
+    in_scene_ = true;
+  }
+  void EndScene() override {
+    if (in_scene_) dev_->EndScene();
+    in_scene_ = false;
+  }
+
+  void Draw(uint32_t prim, uint32_t fvf, const void* v, uint32_t nv,
+            uint32_t stride, const uint16_t* idx, uint32_t ni) override {
+    dev_->SetFVF(fvf);
+    if (idx) {
+      UINT prims = PrimitiveCountFromVertices(prim, ni);
+      if (prims)
+        dev_->DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE(prim), 0, nv, prims, idx,
+                                     D3DFMT_INDEX16, v, stride);
+    } else {
+      UINT prims = PrimitiveCountFromVertices(prim, nv);
+      if (prims) dev_->DrawPrimitiveUP(D3DPRIMITIVETYPE(prim), prims, v, stride);
+    }
+  }
+
+  void Present() override {
+    if (in_scene_) EndScene();
+    dev_->StretchRect(backbuffer_, nullptr, front_, nullptr, D3DTEXF_POINT);
+    PresentFront();
   }
 
  private:
@@ -348,16 +476,6 @@ class D3D9Device final : public Device {
     }
   }
 
-
- public:
-  void ReadBack(const Rect& r, void* dst, uint32_t pitch, Format fmt) override {
-    IDirect3DSurface9* rt = nullptr;
-    dev_->GetRenderTarget(0, &rt);
-    ReadSurface(rt, r, dst, pitch, fmt);
-    rt->Release();
-  }
-
- private:
   void ReadSurface(IDirect3DSurface9* rt, const Rect& r, void* dst, uint32_t pitch,
                    Format fmt) {
     D3DSURFACE_DESC d;
@@ -405,140 +523,6 @@ class D3D9Device final : public Device {
     }
   }
 
- public:
-
-  void SetRenderState(uint32_t s, uint32_t v) override {
-    switch (s) {
-      case 47: {  // D3DRENDERSTATE_ZBIAS (0..16) -> DEPTHBIAS
-        float bias = -float(v) * 0.000005f;
-        uint32_t bits;
-        std::memcpy(&bits, &bias, 4);
-        dev_->SetRenderState(D3DRS_DEPTHBIAS, bits);
-        return;
-      }
-      // D3D7 states that D3D9 dropped or that have no effect here.
-      case 1: case 2: case 3: case 4: case 5: case 6: case 10: case 11:
-      case 12: case 13: case 17: case 18: case 21: case 30: case 31:
-      case 32: case 33: case 39: case 40: case 41: case 42: case 43:
-      case 44: case 45: case 46: case 49: case 50: case 138: case 144:
-        if (ignored_rs_.insert(s).second)
-          DS1_TRACE("gfx: render state %u = %u ignored\n", s, v);
-        return;
-      default:
-        dev_->SetRenderState(D3DRENDERSTATETYPE(s), v);
-    }
-  }
-
-  void SetTextureStageState(uint32_t stage, uint32_t type, uint32_t v) override {
-    switch (type) {
-      case 12:  // ADDRESS (both)
-        dev_->SetSamplerState(stage, D3DSAMP_ADDRESSU, v);
-        dev_->SetSamplerState(stage, D3DSAMP_ADDRESSV, v);
-        return;
-      case 13: dev_->SetSamplerState(stage, D3DSAMP_ADDRESSU, v); return;
-      case 14: dev_->SetSamplerState(stage, D3DSAMP_ADDRESSV, v); return;
-      case 15: dev_->SetSamplerState(stage, D3DSAMP_BORDERCOLOR, v); return;
-      case 16: {  // MAGFILTER: D3DTFG_POINT 1, LINEAR 2, cubic 3/4, ANISO 5
-        DWORD f = v == 1 ? D3DTEXF_POINT : v == 5 ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
-        dev_->SetSamplerState(stage, D3DSAMP_MAGFILTER, f);
-        return;
-      }
-      case 17: {  // MINFILTER: D3DTFN_POINT 1, LINEAR 2, ANISOTROPIC 3
-        DWORD f = v == 1 ? D3DTEXF_POINT : v == 3 ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
-        dev_->SetSamplerState(stage, D3DSAMP_MINFILTER, f);
-        return;
-      }
-      case 18: {  // MIPFILTER: D3DTFP_NONE 1, POINT 2, LINEAR 3
-        DWORD f = v == 2 ? D3DTEXF_POINT : v == 3 ? D3DTEXF_LINEAR : D3DTEXF_NONE;
-        dev_->SetSamplerState(stage, D3DSAMP_MIPFILTER, f);
-        return;
-      }
-      case 19: dev_->SetSamplerState(stage, D3DSAMP_MIPMAPLODBIAS, v); return;
-      case 20: dev_->SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, v); return;
-      case 21: dev_->SetSamplerState(stage, D3DSAMP_MAXANISOTROPY, v); return;
-      default:
-        dev_->SetTextureStageState(stage, D3DTEXTURESTAGESTATETYPE(type), v);
-    }
-  }
-
-  void SetTexture(uint32_t stage, TextureId id) override {
-    if (stage >= 8) return;
-    bound_[stage] = id;
-    auto it = textures_.find(id);
-    dev_->SetTexture(stage, it == textures_.end() ? nullptr : it->second);
-  }
-
-  void SetTransform(uint32_t type, const float m[16]) override {
-    D3DTRANSFORMSTATETYPE t;
-    switch (type) {
-      case 1: t = D3DTS_WORLD; break;
-      case 4: t = D3DTS_WORLD1; break;
-      case 5: t = D3DTS_WORLD2; break;
-      case 6: t = D3DTS_WORLD3; break;
-      default: t = D3DTRANSFORMSTATETYPE(type); break;
-    }
-    dev_->SetTransform(t, reinterpret_cast<const D3DMATRIX*>(m));
-  }
-
-  void SetViewport(const Viewport& v) override {
-    D3DVIEWPORT9 vp{v.x, v.y, v.width, v.height, v.min_z, v.max_z};
-    dev_->SetViewport(&vp);
-  }
-
-  void SetMaterial(const Material& m) override {
-    static_assert(sizeof(Material) == sizeof(D3DMATERIAL9));
-    dev_->SetMaterial(reinterpret_cast<const D3DMATERIAL9*>(&m));
-  }
-
-  void SetLight(uint32_t i, const Light& l) override {
-    static_assert(sizeof(Light) == sizeof(D3DLIGHT9));
-    dev_->SetLight(i, reinterpret_cast<const D3DLIGHT9*>(&l));
-  }
-
-  void LightEnable(uint32_t i, bool e) override { dev_->LightEnable(i, e); }
-
-  void SetClipPlane(uint32_t i, const float p[4]) override {
-    dev_->SetClipPlane(i, p);
-  }
-
-  void Clear(uint32_t count, const Rect* rects, uint32_t flags, uint32_t color,
-             float z, uint32_t stencil) override {
-    static_assert(sizeof(Rect) == sizeof(D3DRECT));
-    if (!current_depth_) flags &= ~(D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL);
-    dev_->Clear(count, reinterpret_cast<const D3DRECT*>(rects), flags, color, z,
-                stencil);
-  }
-
-  void BeginScene() override {
-    if (!in_scene_) dev_->BeginScene();
-    in_scene_ = true;
-  }
-  void EndScene() override {
-    if (in_scene_) dev_->EndScene();
-    in_scene_ = false;
-  }
-
-  void Draw(uint32_t prim, uint32_t fvf, const void* v, uint32_t nv,
-            uint32_t stride, const uint16_t* idx, uint32_t ni) override {
-    dev_->SetFVF(fvf);
-    if (idx) {
-      UINT prims = PrimitiveCountFromVertices(prim, ni);
-      if (prims)
-        dev_->DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE(prim), 0, nv, prims, idx,
-                                     D3DFMT_INDEX16, v, stride);
-    } else {
-      UINT prims = PrimitiveCountFromVertices(prim, nv);
-      if (prims) dev_->DrawPrimitiveUP(D3DPRIMITIVETYPE(prim), prims, v, stride);
-    }
-  }
-
-  void Present() override {
-    if (in_scene_) EndScene();
-    dev_->StretchRect(backbuffer_, nullptr, front_, nullptr, D3DTEXF_POINT);
-    PresentFront();
-  }
-
- private:
   struct Depth {
     IDirect3DSurface9* surf;
     int w, h;
@@ -588,9 +572,7 @@ class D3D9Device final : public Device {
   std::map<uint32_t, Depth> depths_;
   uint32_t next_id_ = 1;
   DepthId current_depth_ = 0;
-  TextureId bound_[8] = {};
   bool in_scene_ = false;
-  int width_ = 0, height_ = 0;
   std::set<uint32_t> ignored_rs_;
 };
 

@@ -67,8 +67,6 @@ class Mixer {
   // device (the game then runs without sound, as on a soundless PC).
   bool Open(int rate);
   void Close();
-  bool is_open() const { return stream_ != nullptr; }
-  int rate() const { return rate_; }
 
   std::mutex& mu() { return mu_; }
   // With mu() held:
@@ -76,7 +74,6 @@ class Mixer {
   void Remove(Voice* v);
   void set_master(float g) { master_ = g; }
   void SetListener(const Vec3& pos, const Vec3& face, const Vec3& up);
-  void SetListenerPos(const Vec3& pos) { lpos_ = pos; }
 
   // Called by the audio thread.
   void Mix(float* out, int frames);
@@ -91,7 +88,6 @@ class Mixer {
   float master_ = 1.0f;
   Vec3 lpos_, lface_{0, 0, 1}, lup_{0, 1, 0};
   std::vector<Voice*> voices_;
-  std::vector<float> scratch_;
 };
 
 Mixer& GetMixer();

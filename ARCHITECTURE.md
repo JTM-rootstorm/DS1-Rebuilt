@@ -246,15 +246,14 @@ on that state. What is known:
   state (single precision, exceptions masked); DDSCL_FPUPRESERVE = D3D
   saves and restores the CW around each call. Without either, the
   Windows runtime switches the thread to single precision and leaves it
-  there (the classic "D3D lowered my precision" effect). To confirm.
+  there (the classic "D3D lowered my precision" effect).
 - Wine's ddraw does not model that default: it never changes the CW the
   app sees; in FPUPRESERVE mode each device method sets 0x37F and
   restores the old CW afterwards (d3d_device7_fpu_preserve_vtbl). So
   Wine is not a reference for this point.
-- Which flags DS passes, and whether its own 0x4143e6 call runs before
-  or after device creation, is open (FINDINGS.md). If D3D's change comes
-  last, PC=24 with RC=chop from the game's routine survives anyway,
-  since D3D only touches precision and masks.
+- DS passes DDSCL_FPUSETUP (coop flags 0xC13, FINDINGS.md), so device
+  creation leaves its CW alone; d3d7.cpp still models the default for
+  completeness.
 
 ### HLE surface (from the 381 imports + dynamic loads)
 - kernel32: heap/virtual memory in the arena, files with case-insensitive

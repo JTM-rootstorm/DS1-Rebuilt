@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+struct AVFrame;
+
 namespace ds1::audio {
 
 using Bytes = std::shared_ptr<const std::vector<uint8_t>>;
@@ -51,6 +53,10 @@ std::unique_ptr<Source> MakeMp3Source(Bytes data, std::string* err);
 // WAV if the data is RIFF, else MP3.
 std::unique_ptr<Source> MakeSource(Bytes data, std::string* err);
 
+// Interleaved float frames from a decoded libavcodec frame (float or s16,
+// planar or packed), keeping the first `out_ch` channels.
+void ConvertFrame(const AVFrame* f, int out_ch, float* out);
+
 // A source fed from another thread (Bink audio). Reads pad with silence
 // while the queue is empty, so the voice keeps playing until Finish().
 class QueueSource : public Source {
@@ -58,8 +64,6 @@ class QueueSource : public Source {
   QueueSource(int channels, int rate);
   void Push(const float* frames, int n);
   void Finish();
-  // Frames queued but not played yet.
-  size_t Queued();
   int Read(float* out, int n) override;
   bool Seek(int64_t f) override { return f == 0; }
 

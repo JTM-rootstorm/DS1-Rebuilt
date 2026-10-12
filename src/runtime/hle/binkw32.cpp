@@ -19,7 +19,6 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
@@ -153,7 +152,7 @@ AVCodecContext* OpenDecoder(AVStream* st) {
 }
 
 void QueueAudio(Movie& m, AVFrame* f) {
-  int ch = f->ch_layout.nb_channels, out_ch = std::min(ch, 2);
+  int out_ch = std::min(f->ch_layout.nb_channels, 2);
   if (!m.voice) {
     auto q = std::make_unique<audio::QueueSource>(out_ch, f->sample_rate);
     m.queue = q.get();
@@ -166,21 +165,7 @@ void QueueAudio(Movie& m, AVFrame* f) {
   }
   if (out_ch != m.queue->channels()) return;
   std::vector<float> buf(size_t(f->nb_samples) * out_ch);
-  auto fmt = AVSampleFormat(f->format);
-  bool planar = av_sample_fmt_is_planar(fmt);
-  auto packed = av_get_packed_sample_fmt(fmt);
-  for (int i = 0; i < f->nb_samples; i++)
-    for (int c = 0; c < out_ch; c++) {
-      float v = 0;
-      if (packed == AV_SAMPLE_FMT_FLT)
-        v = planar ? reinterpret_cast<const float*>(f->data[c])[i]
-                   : reinterpret_cast<const float*>(f->data[0])[i * ch + c];
-      else if (packed == AV_SAMPLE_FMT_S16)
-        v = (planar ? reinterpret_cast<const int16_t*>(f->data[c])[i]
-                    : reinterpret_cast<const int16_t*>(f->data[0])[i * ch + c]) /
-            32768.0f;
-      buf[size_t(i) * out_ch + c] = v;
-    }
+  audio::ConvertFrame(f, out_ch, buf.data());
   m.queue->Push(buf.data(), f->nb_samples);
 }
 

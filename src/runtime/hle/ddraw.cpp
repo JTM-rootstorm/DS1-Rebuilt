@@ -2,8 +2,11 @@
 // IDirectDrawSurface7, IDirectDrawGammaControl, IDirectDrawClipper.
 //
 // Surfaces:
-//   - Primary + back buffer(s): the gfx swap chain. Flip presents. Locks
-//     read back / write back through the gfx device (rare: screenshots).
+//   - Back buffer: the gfx render target. The game presents with
+//     Blt(primary <- back buffer) (or Flip). Lock reads it back; Unlock
+//     writes the changed rows back.
+//   - Primary: the gfx front buffer (the last presented frame), which the
+//     game's cursor thread draws on between frames.
 //   - Z buffers: gfx depth surfaces, attached to the back buffer.
 //   - Textures (incl. mip chains): a gfx texture plus guest memory for each
 //     level; Lock hands out the guest memory, Unlock uploads it.
@@ -38,15 +41,21 @@ namespace {
 constexpr guest::GUID kIID_IDirectDraw7 = {0x15e65ec0, 0x3b9c, 0x11d2, {0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b}};
 constexpr guest::GUID kIID_IDirectDrawSurface7 = {0x06675a80, 0x3b9b, 0x11d2, {0xb9, 0x2f, 0x00, 0x60, 0x97, 0x97, 0xea, 0x5b}};
 constexpr guest::GUID kIID_IDirectDrawGammaControl = {0x69C11C3E, 0xB46B, 0x11D1, {0xAD, 0x7A, 0x00, 0xC0, 0x4F, 0xC2, 0x9B, 0x4E}};
-constexpr guest::GUID kIID_IDirect3D7 = {0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
 
-constexpr uint32_t kVidMemTotal = 64u << 20;
+constexpr uint32_t kVidMemTotal = 64u << 20, kVidMemFree = kVidMemTotal - (8u << 20);
 
 State g_state;
 Uint64 g_last_present_ms = 0;  // SDL ticks of the last frame Present
 
-// Dev aid: DS1_SHOT_EVERY=N saves every Nth presented frame as
-// $DS1_SHOT_DIR/frame_NNNNN.bmp (default dir: current directory).
+int PrimaryWidth() { return g_state.mode_w ? g_state.mode_w : 1024; }
+int PrimaryHeight() { return g_state.mode_h ? g_state.mode_h : 768; }
+gfx::Format PrimaryFormat() {
+  return g_state.mode_bpp == 16 ? gfx::Format::R5G6B5 : gfx::Format::X8R8G8B8;
+}
+
+// Dev aid: DS1_SHOT_EVERY=N saves every Nth presented frame (from frame
+// DS1_SHOT_FROM on) as $DS1_SHOT_DIR/frame_NNNNN.bmp (default dir: current
+// directory).
 void PresentFrame() {
   static const int every = [] {
     const char* e = std::getenv("DS1_SHOT_EVERY");
@@ -60,7 +69,7 @@ void PresentFrame() {
   frame++;
   gfx::Device* g = Gfx();
   if (every > 0 && frame >= from && frame % every == 0) {
-    int w = g_state.mode_w ? g_state.mode_w : 1024, h = g_state.mode_h ? g_state.mode_h : 768;
+    int w = PrimaryWidth(), h = PrimaryHeight();
     std::vector<uint8_t> px(size_t(w) * h * 4);
     g->ReadBack({0, 0, w, h}, px.data(), uint32_t(w * 4), gfx::Format::X8R8G8B8);
     SDL_Surface* surf = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_XRGB8888,
@@ -97,11 +106,6 @@ void PresentFrame() {
   }
 }
 
-template <typename T>
-T* G(uint32_t va) {
-  return reinterpret_cast<T*>(GPtr(va));
-}
-
 }  // namespace
 
 State& St() { return g_state; }
@@ -109,20 +113,14 @@ State& St() { return g_state; }
 gfx::Device* Gfx() {
   State& s = g_state;
   if (!s.gfx) {
-    // No vsync by default: the game caps itself at 60 fps, and a FIFO
-    // (vsync) present to a Wayland window the compositor stops sending
-    // frame callbacks to blocks indefinitely, and every later GPU wait
-    // (Lock/Blt readbacks) with it. That froze the game when focus flipped
-    // out and back in quickly. Presents go out in mailbox mode instead
-    // (dxvk.tearFree, set by the d3d9 backend): no tearing, never blocks.
-    // DS1_VSYNC=1 asks for vsync anyway.
+    // No vsync unless DS1_VSYNC=1: see FINDINGS.md "Freeze on a quick
+    // focus flip".
     const char* vs = std::getenv("DS1_VSYNC");
     s.vsync = vs && *vs && *vs != '0';
     SDL_Window* w = SdlWindowFor(s.hwnd);
     if (!w) FatalF("ddraw: no SDL window for hwnd %08X", s.hwnd);
     s.gfx = gfx::CreateD3D9Device(w);
-    int mw = s.mode_w ? s.mode_w : 1024, mh = s.mode_h ? s.mode_h : 768;
-    s.gfx->ResetSwapChain(mw, mh, gfx::Format::X8R8G8B8, s.vsync);
+    s.gfx->ResetSwapChain(PrimaryWidth(), PrimaryHeight(), s.vsync);
   }
   return s.gfx.get();
 }
@@ -144,8 +142,7 @@ gfx::Format FormatFromPixelFormat(const DDPIXELFORMAT& pf) {
   if (pf.dwFlags & DDPF_ZBUFFER) {
     uint32_t bits = pf.dwRGBBitCount, stencil = pf.dwRBitMask;
     if (bits == 16) return stencil ? F::D15S1 : F::D16;
-    if (bits == 32 && pf.dwGBitMask == 0xFFFFFF00) return stencil ? F::D24S8 : F::D24X8;
-    if (bits == 32 && pf.dwGBitMask == 0x00FFFFFF) return stencil ? F::D24S8 : F::D24X8;
+    if (bits == 32 && pf.dwGBitMask != 0xFFFFFFFF) return stencil ? F::D24S8 : F::D24X8;
     if (bits == 32) return F::D32;
     if (bits == 24) return F::D24X8;
     return F::Unknown;
@@ -234,7 +231,6 @@ Surface::~Surface() {
     if (depth) s.gfx->DestroyDepth(depth);
   }
   if (mem) FindHeap(g_proc->process_heap)->Free(mem);
-  if (s.primary == this) s.primary = nullptr;
   if (s.backbuffer == this) s.backbuffer = nullptr;
 }
 
@@ -276,7 +272,6 @@ std::shared_ptr<Surface> NewSurface(Surface::Kind kind, int w, int h,
                                     gfx::Format fmt, uint32_t caps,
                                     uint32_t caps2) {
   auto s = std::make_shared<Surface>();
-  s->iface = "IDirectDrawSurface7";
   s->kind = kind;
   s->width = w;
   s->height = h;
@@ -300,18 +295,6 @@ Surface* Self(Ctx& c) {
   return s;
 }
 
-int PrimaryWidth() { return g_state.mode_w ? g_state.mode_w : 1024; }
-int PrimaryHeight() { return g_state.mode_h ? g_state.mode_h : 768; }
-gfx::Format PrimaryFormat() {
-  return g_state.mode_bpp == 16 ? gfx::Format::R5G6B5 : gfx::Format::X8R8G8B8;
-}
-
-// The back buffer lives on the GPU as the render target. The primary is
-// the gfx front buffer: the last presented frame, which the game's cursor
-// thread reads and draws on between frames (save-under, then blend).
-bool IsRenderTarget(const Surface& s) { return s.kind == Surface::Kind::BackBuffer; }
-bool IsPrimary(const Surface& s) { return s.kind == Surface::Kind::Primary; }
-
 uint32_t CreateSurfaceImpl(uint32_t desc_va, uint32_t* out) {
   const DDSURFACEDESC2& d = *G<DDSURFACEDESC2>(desc_va);
   uint32_t caps = d.ddsCaps.dwCaps, caps2 = d.ddsCaps.dwCaps2;
@@ -331,7 +314,6 @@ uint32_t CreateSurfaceImpl(uint32_t desc_va, uint32_t* out) {
                            caps | DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM |
                                DDSCAPS_FRONTBUFFER,
                            caps2);
-    g_state.primary = prim.get();
     uint32_t backs = (d.dwFlags & DDSD_BACKBUFFERCOUNT) ? d.dwBackBufferCount : 0;
     if (backs) {
       prim->desc.dwFlags |= DDSD_BACKBUFFERCOUNT;
@@ -346,7 +328,7 @@ uint32_t CreateSurfaceImpl(uint32_t desc_va, uint32_t* out) {
       if (backs > 1)
         WarnF("ddraw: %u back buffers requested; presenting through one\n", backs);
     } else {
-      g_state.backbuffer = prim.get();  // render straight to the front
+      g_state.backbuffer = prim.get();  // the game always asks for one
     }
     *out = prim->guest;
     return DD_OK;
@@ -469,18 +451,19 @@ void BlitMem(Surface& dst, const guest::RECT& dr, Surface& src,
   }
 }
 
-// Brings a render target's pixels into its guest memory (for Lock/Blt
-// from it).
-void PullRenderTarget(Surface& s) {
-  if (!s.mem) AllocMem(s);
-  gfx::Rect r{0, 0, s.width, s.height};
-  Gfx()->ReadBack(r, GPtr(s.mem), s.pitch, s.fmt);
+bool OnGpu(const Surface& s) {
+  return s.kind == Surface::Kind::BackBuffer || s.kind == Surface::Kind::Primary;
 }
 
-// Brings the front buffer into the primary's guest memory.
-void PullFront(Surface& s) {
+// Brings the back buffer's or the primary's (front buffer's) pixels into
+// its guest memory, for Lock and Blt from it.
+void Pull(Surface& s) {
   if (!s.mem) AllocMem(s);
-  Gfx()->ReadBackFront({0, 0, s.width, s.height}, GPtr(s.mem), s.pitch, s.fmt);
+  gfx::Rect r{0, 0, s.width, s.height};
+  if (s.kind == Surface::Kind::Primary)
+    Gfx()->ReadBackFront(r, GPtr(s.mem), s.pitch, s.fmt);
+  else
+    Gfx()->ReadBack(r, GPtr(s.mem), s.pitch, s.fmt);
 }
 
 // Writes rows/rect `r` of the primary's guest memory to the front buffer.
@@ -492,15 +475,15 @@ void PushFront(Surface& s, const gfx::Rect& r) {
   if (SDL_GetTicks() - g_last_present_ms > 50) Gfx()->PresentFront();
 }
 
-uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
-                 uint32_t src_rect_va, bool key, uint32_t keyval,
-                 bool fill, uint32_t fill_raw, bool depth_fill, uint32_t depth_raw) {
-  guest::RECT dr = ReadRect(dst_rect_va, dst);
+// `fill_raw` is DDBLTFX's dwFillColor/dwFillDepth union.
+uint32_t BltImpl(Surface& dst, const guest::RECT& dr, Surface* src,
+                 const guest::RECT& sr, bool key, uint32_t keyval, bool fill,
+                 bool depth_fill, uint32_t fill_raw) {
   if (depth_fill) {
     if (!dst.depth) return DDERR_INVALIDPARAMS;
     // Only full clears are expected; the gfx clear acts on the bound Z.
-    float z = dst.fmt == gfx::Format::D16 ? float(depth_raw) / 65535.0f
-                                          : float(depth_raw & 0xFFFFFF) / 16777215.0f;
+    float z = dst.fmt == gfx::Format::D16 ? float(fill_raw) / 65535.0f
+                                          : float(fill_raw & 0xFFFFFF) / 16777215.0f;
     gfx::Device* g = Gfx();
     g->SetRenderTarget(0, dst.depth);
     g->Clear(0, nullptr, 2 /* ZBUFFER */, 0, z, 0);
@@ -508,14 +491,14 @@ uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
       g->SetRenderTarget(0, g_state.backbuffer->zbuffer ? g_state.backbuffer->zbuffer->depth : 0);
     return DD_OK;
   }
-  if (fill && IsPrimary(dst)) {
-    PullFront(dst);
+  if (fill && dst.kind == Surface::Kind::Primary) {
+    Pull(dst);
     FillMem(dst, dr, fill_raw);
     PushFront(dst, {dr.left, dr.top, dr.right, dr.bottom});
     return DD_OK;
   }
   if (fill) {
-    if (IsRenderTarget(dst)) {
+    if (dst.kind == Surface::Kind::BackBuffer) {
       uint32_t px[1];
       gfx::PutRawPixel(reinterpret_cast<uint8_t*>(px), dst.fmt, fill_raw);
       uint32_t argb = gfx::DecodePixel(reinterpret_cast<uint8_t*>(px), dst.fmt);
@@ -535,22 +518,19 @@ uint32_t BltImpl(Surface& dst, uint32_t dst_rect_va, Surface* src,
     PresentFrame();
     return DD_OK;
   }
-  guest::RECT sr = ReadRect(src_rect_va, *src);
-  if (IsRenderTarget(*src)) PullRenderTarget(*src);
-  if (IsPrimary(*src)) PullFront(*src);
+  if (OnGpu(*src)) Pull(*src);
   if (!src->mem) return DDERR_UNSUPPORTED;
-  if (IsPrimary(dst)) {
-    if (key || src == &dst) PullFront(dst);
+  if (dst.kind == Surface::Kind::Primary) {
+    if (key || src == &dst) Pull(dst);
     if (!dst.mem) AllocMem(dst);
     BlitMem(dst, dr, *src, sr, key, keyval);
     PushFront(dst, {dr.left, dr.top, dr.right, dr.bottom});
     return DD_OK;
   }
-  if (IsRenderTarget(dst)) {
+  if (dst.kind == Surface::Kind::BackBuffer) {
     gfx::Rect s{sr.left, sr.top, sr.right, sr.bottom};
     gfx::Rect d{dr.left, dr.top, dr.right, dr.bottom};
-    Gfx()->Blit(GPtr(src->mem), src->pitch, src->fmt, src->width, src->height,
-                s, d, key, keyval);
+    Gfx()->Blit(GPtr(src->mem), src->pitch, src->fmt, s, d, key, keyval);
     return DD_OK;
   }
   if (!dst.mem) return DDERR_UNSUPPORTED;
@@ -615,7 +595,6 @@ HLE("ddraw.dll", DirectDrawCreateEx, 4) {
   }
   if (!com::GuidEq(iid, kIID_IDirectDraw7)) return com::kE_NOINTERFACE;
   auto dd = std::make_shared<DirectDraw>();
-  dd->iface = "IDirectDraw7";
   Wr32(out, com::Publish(dd, DirectDrawVtable()));
   return DD_OK;
 }
@@ -704,7 +683,7 @@ HLE_NAMED("ddraw.dll", "IDirectDraw7::SetDisplayMode", DD7_SetDisplayMode, 6) {
   s.mode_bpp = bpp;
   // The "mode" is the window's client size; the desktop is left alone.
   SetExclusiveMode(s.hwnd, w, h);
-  if (s.gfx) s.gfx->ResetSwapChain(w, h, gfx::Format::X8R8G8B8, s.vsync);
+  if (s.gfx) s.gfx->ResetSwapChain(w, h, s.vsync);
   return DD_OK;
 }
 
@@ -749,7 +728,7 @@ HLE_NAMED("ddraw.dll", "IDirectDraw7::GetCaps", DD7_GetCaps, 3) {
       k.dwCKeyCaps = 0x200;  // DDCKEYCAPS_SRCBLT
       k.dwZBufferBitDepths = 0x400 | 0x200 | 0x100;  // 16, 24, 32
       k.dwVidMemTotal = kVidMemTotal;
-      k.dwVidMemFree = kVidMemTotal - (8u << 20);
+      k.dwVidMemFree = kVidMemFree;
       k.ddsCaps.dwCaps = DDSCAPS_3DDEVICE | DDSCAPS_TEXTURE | DDSCAPS_ZBUFFER |
                          DDSCAPS_FLIP | DDSCAPS_PRIMARYSURFACE |
                          DDSCAPS_BACKBUFFER | DDSCAPS_VIDEOMEMORY |
@@ -766,7 +745,7 @@ HLE_NAMED("ddraw.dll", "IDirectDraw7::GetCaps", DD7_GetCaps, 3) {
 
 HLE_NAMED("ddraw.dll", "IDirectDraw7::GetAvailableVidMem", DD7_GetAvailableVidMem, 4) {
   if (Arg(c, 2)) Wr32(Arg(c, 2), kVidMemTotal);
-  if (Arg(c, 3)) Wr32(Arg(c, 3), kVidMemTotal - (8u << 20));
+  if (Arg(c, 3)) Wr32(Arg(c, 3), kVidMemFree);
   return DD_OK;
 }
 
@@ -812,7 +791,6 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::QueryInterface", DDS7_QueryInterfac
   if (com::GuidEq(iid, kIID_IDirectDrawGammaControl)) {
     struct Gamma : com::Object {};
     auto g = std::make_shared<Gamma>();
-    g->iface = "IDirectDrawGammaControl";
     Wr32(out, com::Publish(g, com::Vtable("ddraw.dll", "IDirectDrawGammaControl",
                                           {"QueryInterface", "AddRef", "Release",
                                            "GetGammaRamp", "SetGammaRamp"})));
@@ -855,8 +833,6 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::GetAttachedSurface", DDS7_GetAttach
       return DD_OK;
     }
   }
-  // The flip chain is circular: the last back buffer's "back buffer" is
-  // the front; mip chains simply end.
   Wr32(Arg(c, 2), 0);
   return DDERR_NOTFOUND;
 }
@@ -897,11 +873,8 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Lock", DDS7_Lock, 5) {
     WarnF("ddraw: Lock of a Z buffer is not supported\n");
     return DDERR_UNSUPPORTED;
   }
-  if (IsRenderTarget(*s) || IsPrimary(*s)) {
-    if (IsPrimary(*s))
-      PullFront(*s);
-    else
-      PullRenderTarget(*s);
+  if (OnGpu(*s)) {
+    Pull(*s);
     s->lock_snapshot.assign(GPtr(s->mem), GPtr(s->mem) + size_t(s->pitch) * s->height);
   }
   if (!s->mem) AllocMem(*s);
@@ -926,8 +899,8 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Unlock", DDS7_Unlock, 2) {
   s->locked = false;
   if (s->kind == Surface::Kind::Texture) {
     UploadLevel(*s);
-  } else if (IsRenderTarget(*s) || IsPrimary(*s)) {
-    // Write the rows the game edited back over the render target.
+  } else if (OnGpu(*s)) {
+    // Write the rows the game edited back.
     const uint8_t* mem = GPtr(s->mem);
     const uint8_t* snap = s->lock_snapshot.data();
     int top = s->height, bottom = 0;
@@ -944,11 +917,10 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Unlock", DDS7_Unlock, 2) {
     s->lock_snapshot.clear();
     if (top < bottom) {
       gfx::Rect r{0, top, s->width, bottom};
-      if (IsPrimary(*s))
+      if (s->kind == Surface::Kind::Primary)
         PushFront(*s, r);
       else
-        Gfx()->Blit(GPtr(s->mem), s->pitch, s->fmt, s->width, s->height, r, r,
-                    false, 0);
+        Gfx()->Blit(GPtr(s->mem), s->pitch, s->fmt, r, r, false, 0);
     }
   }
   return DD_OK;
@@ -972,7 +944,8 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Blt", DDS7_Blt, 6) {
   bool fill = flags & 0x400;          // DDBLT_COLORFILL
   bool zfill = flags & 0x2000000;     // DDBLT_DEPTHFILL
   uint32_t fillv = fx ? G<guest::DDBLTFX>(fx)->dwFillColor : 0;
-  return BltImpl(*dst, drect, src, srect, key, keyval, fill, fillv, zfill, fillv);
+  guest::RECT sr = src ? ReadRect(srect, *src) : guest::RECT{};
+  return BltImpl(*dst, ReadRect(drect, *dst), src, sr, key, keyval, fill, zfill, fillv);
 }
 
 HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::BltFast", DDS7_BltFast, 6) {
@@ -982,13 +955,10 @@ HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::BltFast", DDS7_BltFast, 6) {
   uint32_t srect = Arg(c, 4), flags = Arg(c, 5);
   if (!src) return DDERR_INVALIDPARAMS;
   guest::RECT sr = ReadRect(srect, *src);
-  uint32_t drect = HeapAllocProcess(16, false);
-  *G<guest::RECT>(drect) = {x, y, x + (sr.right - sr.left), y + (sr.bottom - sr.top)};
+  guest::RECT dr{x, y, x + (sr.right - sr.left), y + (sr.bottom - sr.top)};
   bool key = (flags & 1) && src->has_ck_src;  // DDBLTFAST_SRCCOLORKEY
-  uint32_t hr = BltImpl(*dst, drect, src, srect, key, src->ck_src.dwColorSpaceLowValue,
-                        false, 0, false, 0);
-  FindHeap(g_proc->process_heap)->Free(drect);
-  return hr;
+  return BltImpl(*dst, dr, src, sr, key, src->ck_src.dwColorSpaceLowValue,
+                 false, false, 0);
 }
 
 HLE_NAMED("ddraw.dll", "IDirectDrawSurface7::Flip", DDS7_Flip, 3) {

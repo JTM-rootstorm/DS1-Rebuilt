@@ -22,8 +22,9 @@ port is planned.
 
 ## How it works
 
-The machinery lives in x86recomp, a library shared with other PC game
-recomps and checked out next to this repository; this repository holds
+The machinery lives in
+[x86recomp](https://github.com/JTM-rootstorm/x86recomp), a library shared
+with other PC game recomps and checked out next to this repository; this repository holds
 what is specific to Dungeon Siege (configuration, lifter manifest, game
 hooks, docs).
 
@@ -58,8 +59,12 @@ x86recomp's ARCHITECTURE.md describes the design in detail;
 ## Building
 
 Paths below assume the game is in `$GAME` and this repository in `$REPO`,
-with an x86recomp checkout next to it as `$REPO/../../x86recomp` (pass
-`-DX86RECOMP_DIR=...` to cmake otherwise).
+with an x86recomp checkout at `$REPO/../../x86recomp` (pass
+`-DX86RECOMP_DIR=...` to cmake otherwise):
+
+```sh
+git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
+```
 
 1. **dxvk-native** (DXVK v3.1.1, Direct3D 9 only, SDL3 window system):
 

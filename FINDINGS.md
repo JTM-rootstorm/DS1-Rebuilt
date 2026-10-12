@@ -37,6 +37,11 @@ M4 findings:
   up to 25 3D samples on "Miles Fast 2D Positional Audio" (picked when
   EAX is off), MP3/WAV streams for music/voice via AIL_open_stream with
   file callbacks into the Tank file system, fade timers.
+- EAX (x86recomp 23adb0b): with EAX on (the audio option, saved as
+  `eax_enabled` in prefs.gas, or `enable_eax=true` on the command line,
+  read in GPGSound init 0x62DBD5) the game opens "Creative Labs EAX (TM)"
+  (EAX 1.0), allocates its 3D samples there, sets room types from its
+  mood settings (eMoodRoomType) and per-sample effects levels.
 - 3D coordinates: the game's world is right-handed (every VIEW matrix
   has det -1); GPGSound negates z on all positions and orientations to
   give Miles its left-handed space, so up x face is screen-right there.

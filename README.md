@@ -38,8 +38,8 @@ hooks, docs).
   integer fast paths. Tests compare it bit for bit against a real x87.
 - **Runtime and HLE** (x86recomp `src/runtime`): the guest's 4 GiB
   address space, threads, SEH, and every imported Windows/DirectX/Miles/
-  Bink function, implemented on SDL3, dxvk-native (Direct3D 9 on Vulkan)
-  and ffmpeg.
+  Bink function, implemented on SDL3, dxvk-native (Direct3D 9 on Vulkan),
+  ffmpeg and OpenAL Soft (EAX reverb).
 
 x86recomp's ARCHITECTURE.md describes the design in detail;
 [ARCHITECTURE.md](ARCHITECTURE.md) here covers the Dungeon Siege parts.
@@ -51,8 +51,8 @@ x86recomp's ARCHITECTURE.md describes the design in detail;
 - Linux x86-64 with a Vulkan driver.
 - Clang and LLVM (22 used; the static `libLLVMDemangle.a` and its
   headers are needed), CMake 3.25 or newer, Ninja, Python 3.
-- SDL3 and ffmpeg development packages (libavformat, libavcodec,
-  libavutil, libswscale).
+- SDL3, ffmpeg (libavformat, libavcodec, libavutil, libswscale) and
+  OpenAL Soft development packages.
 - Meson, to build dxvk-native.
 - Ghidra (12.1 used), headless, to find the game's functions.
 
@@ -159,6 +159,6 @@ redistributed.
 
 The code here is under the [MIT License](LICENSE). Dependencies keep
 their own licences: Berkeley SoftFloat 3e (BSD-3-Clause) and Zydis (MIT)
-are fetched at build time; SDL3 (zlib), DXVK (zlib), ffmpeg (LGPL,
-linked dynamically) and LLVM's demangler (Apache-2.0 with LLVM
-exception) come from your system.
+are fetched at build time; SDL3 (zlib), DXVK (zlib), ffmpeg and OpenAL
+Soft (LGPL, linked dynamically) and LLVM's demangler (Apache-2.0 with
+LLVM exception) come from your system.

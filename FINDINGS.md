@@ -247,6 +247,18 @@ prints the guest address and lifted host backtrace.
   multiprocessor paths (we report 2..8 CPUs). Needs a repro; Wine run of
   the original as a reference if it recurs.
 
+- Startup crash inside dxvk, about 1 in 70 starts (3 of ~370 automated
+  starts): right after the d3d9 device is created, the main thread calls a
+  null pointer from DxvkImage::updateDebugName() (libdxvk_d3d9.so
+  +0x26431c, the vkSetDebugUtilsObjectNameEXT call). Debug utils are not
+  enabled (no DXVK_DEBUG, no capture env), so that entry point is never
+  loaded; reaching it means an image with a debug name and owned storage
+  (only presenter swap images carry a name without capture mode) or a
+  freed image. Happens with tearFree on (mailbox) and off (immediate), so
+  not the focus-flip fix. Not reproduced under gdb. Next: rule vsync in
+  or out (DS1_VSYNC=1 loop), then find the image (a dxvk patch branch with
+  a null check plus a log of the image's info), and check upstream dxvk.
+
 ## Pinned for after the baseline (improvements over the original)
 
 - Sounds drop out when many play at once (cut off or never start; the

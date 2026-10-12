@@ -109,13 +109,15 @@ State& St() { return g_state; }
 gfx::Device* Gfx() {
   State& s = g_state;
   if (!s.gfx) {
-    // DS1_VSYNC=0 presents immediately. Background (automated) runs never
-    // wait for vblank: a FIFO present to an occluded Wayland window can
-    // block indefinitely.
+    // No vsync by default: the game caps itself at 60 fps, and a FIFO
+    // (vsync) present to a Wayland window the compositor stops sending
+    // frame callbacks to blocks indefinitely, and every later GPU wait
+    // (Lock/Blt readbacks) with it. That froze the game when focus flipped
+    // out and back in quickly. Presents go out in mailbox mode instead
+    // (dxvk.tearFree, set by the d3d9 backend): no tearing, never blocks.
+    // DS1_VSYNC=1 asks for vsync anyway.
     const char* vs = std::getenv("DS1_VSYNC");
-    const char* bg = std::getenv("DS1_BACKGROUND");
-    if (vs) s.vsync = *vs && *vs != '0';
-    else if (bg && *bg && *bg != '0') s.vsync = false;
+    s.vsync = vs && *vs && *vs != '0';
     SDL_Window* w = SdlWindowFor(s.hwnd);
     if (!w) FatalF("ddraw: no SDL window for hwnd %08X", s.hwnd);
     s.gfx = gfx::CreateD3D9Device(w);

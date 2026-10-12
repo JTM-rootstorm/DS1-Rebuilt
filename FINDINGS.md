@@ -113,6 +113,14 @@ M4 findings:
   runs ~26 ms/frame: millions of plain x87 instructions per frame (CPU
   skinning: quaternion rotate 0x5338E9 alone is ~19%) at ~5 ns each.
   ThinLTO of lifted code + ds1_x87 gained nothing measurable.
+- Freeze on a quick focus flip (fixed): with focus-follows-mouse, the
+  pointer overshot the window and came back; the main thread hung in a
+  back-buffer readback (cursor Blt -> GetRenderTargetData -> dxvk
+  waitForResource). The GPU work sat behind a vsync (FIFO) present that
+  the compositor never released (no frame callbacks). Vsync is now off by
+  default and dxvk presents in mailbox mode (dxvk.tearFree = True, set in
+  DXVK_CONFIG unless the user set tearFree): no tearing, never blocks; the
+  game's own 60 fps cap paces it. DS1_VSYNC=1 restores FIFO.
 - Cursor glitches on mouse-over (fixed): the game draws a software
   cursor (0x656E02) only while GetForegroundWindow is its window: save
   the pixels under it, blend a 64x64 ARGB image, Blt back. The main

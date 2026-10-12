@@ -129,7 +129,8 @@ sequences) lifted versus executed natively. The EXE-derived tests need
   (`DS1_TRACE_FILTER=mss32` narrows it).
 - `DS1_X87_RUNS=0` turns the lifted x87 runs off (per-instruction model
   only), for comparisons.
-- `DS1_VSYNC=0` presents without waiting for vblank.
+- `DS1_VSYNC=1` turns vsync on (off by default: the game caps itself at
+  60 fps and frames go out in tear-free mailbox mode).
 
 ## Legal
 

@@ -65,6 +65,15 @@ class D3D9Device final : public Device {
   explicit D3D9Device(SDL_Window* w) : window_(w) {
     // dxvk-native refuses to start without a WSI backend name.
     setenv("DXVK_WSI_DRIVER", "SDL3", 0);
+    // Without vsync, present in mailbox mode (no tearing) rather than
+    // immediate: see ResetSwapChain's caller (ddraw Gfx()) for why vsync is
+    // off by default. A tearFree setting the user made wins.
+    const char* conf = std::getenv("DXVK_CONFIG");
+    if (!conf || !std::strstr(conf, "tearFree")) {
+      std::string v = conf && *conf ? std::string(conf) + ";" : std::string();
+      v += "dxvk.tearFree = True";
+      setenv("DXVK_CONFIG", v.c_str(), 1);
+    }
     d3d_ = Direct3DCreate9(D3D_SDK_VERSION);
     if (!d3d_) FatalF("Direct3DCreate9 failed");
   }

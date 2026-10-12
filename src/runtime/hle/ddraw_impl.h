@@ -70,7 +70,7 @@ struct State {
   std::unique_ptr<gfx::Device> gfx;
   Surface* primary = nullptr;     // front buffer of the flip chain
   Surface* backbuffer = nullptr;  // first back buffer (render target)
-  bool vsync = true;
+  bool vsync = false;
 };
 State& St();
 // The gfx device, created on first use for the cooperative window.

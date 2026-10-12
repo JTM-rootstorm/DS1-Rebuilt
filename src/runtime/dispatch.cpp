@@ -328,10 +328,4 @@ void Probe(Ctx& c, uint32_t va, const char* name) {
   std::fprintf(stderr, "%s\n", line.c_str());
 }
 
-void X87Check(Ctx& c, uint32_t va) {
-  if (c.fpu.unmasked_fault)
-    FatalF("unmasked x87 exception at %08X (sw=%04X cw=%04X)", va,
-           x87::StatusWord(c.fpu), x87::ControlWord(c.fpu));
-}
-
 }  // namespace ds1

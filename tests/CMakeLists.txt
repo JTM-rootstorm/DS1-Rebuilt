@@ -2,22 +2,20 @@
 
 # x87_test runs the host CPU's own x87 (inline asm) next to the model from
 # the same state and compares the results, so it can only exist on x86-64.
-if(TARGET ds1_x87 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
   add_executable(x87_test x87_test.cpp)
   target_link_libraries(x87_test PRIVATE ds1_x87)
   add_test(NAME x87 COMMAND x87_test)
   set_tests_properties(x87 PROPERTIES TIMEOUT 300)
 endif()
 
-# x87_fast_test checks the model's integer fast path against its own
-# SoftFloat path; portable.
-if(TARGET ds1_x87)
-  add_executable(x87_fast_test x87_fast_test.cpp)
-  target_link_libraries(x87_fast_test PRIVATE ds1_x87)
-  target_compile_options(x87_fast_test PRIVATE -O2)
-  add_test(NAME x87_fast COMMAND x87_fast_test)
-  set_tests_properties(x87_fast PROPERTIES TIMEOUT 300)
-endif()
+# x87_fast_test checks the model's integer fast paths against its own
+# SoftFloat paths; portable.
+add_executable(x87_fast_test x87_fast_test.cpp)
+target_link_libraries(x87_fast_test PRIVATE ds1_x87)
+target_compile_options(x87_fast_test PRIVATE -O2)
+add_test(NAME x87_fast COMMAND x87_fast_test)
+set_tests_properties(x87_fast PROPERTIES TIMEOUT 300)
 
 # lift_semantics_test checks the integer/flag helpers in lifted.h against
 # the host CPU the same way.
@@ -34,7 +32,7 @@ endif()
 # needs the EXE to generate its inputs: configure with
 #   -DDS1_GAME_EXE=".../Dungeon Siege/DungeonSiege.exe"
 set(DS1_GAME_EXE "" CACHE FILEPATH "DungeonSiege.exe for EXE-derived tests")
-if(TARGET ds1_x87 AND TARGET ds1_lift AND EXISTS "${DS1_GAME_EXE}" AND
+if(TARGET ds1_lift AND EXISTS "${DS1_GAME_EXE}" AND
    CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
   set(_forms "${CMAKE_CURRENT_BINARY_DIR}/lift_x87_forms.cpp")
   add_custom_command(OUTPUT "${_forms}"

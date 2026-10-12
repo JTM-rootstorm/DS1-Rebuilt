@@ -1,5 +1,6 @@
-// Checks the x87 model's integer fast path for add/sub/mul/div of normal
-// operands against the SoftFloat path it bypasses (x87::g_softfloat_only).
+// Checks the x87 model's integer fast paths (add/sub/mul/div of normal
+// operands, fst m32/m64, fsin/fcos/fsincos) against the SoftFloat paths
+// they bypass (x87::g_softfloat_only).
 // Portable (no host FPU), so it also runs on arm64. Every case runs one
 // instruction on identical states both ways and compares the registers,
 // the status word (flags, C1) and the tag word bit for bit. The SoftFloat

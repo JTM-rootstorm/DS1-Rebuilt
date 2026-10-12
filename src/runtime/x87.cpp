@@ -99,13 +99,6 @@ constexpr F80 Canonical(F80 v) {
   return v;
 }
 
-// Tag of a non-empty register: 00 valid, 01 zero, 10 special.
-constexpr int ClassTag(F80 v) {
-  if (ExpOf(v) == 0) return v.sig ? 2 : 1;
-  if (ExpOf(v) == 0x7FFF || !(v.sig & kJ)) return 2;
-  return 0;
-}
-
 // Normalised (unbiased exponent, significand with J set) of a finite
 // non-zero value, denormals included. value = sig / 2^63 * 2^exp.
 struct Norm {
@@ -212,7 +205,6 @@ uint8_t SfPrecision(uint32_t cw) {
     default: return 80;
   }
 }
-uint8_t SfPrecision(const State& s) { return SfPrecision(s.cw); }
 
 void SfBegin(uint8_t mode, uint8_t precision) {
   softfloat_roundingMode = mode;
@@ -416,6 +408,24 @@ Q QFromU128(uint64_t hi, uint64_t lo, int scale) {
   return q;
 }
 
+int Clz128(uint64_t hi, uint64_t lo) {
+  return hi ? std::countl_zero(hi) : 64 + std::countl_zero(lo);
+}
+
+// Shifts a non-zero 128-bit value left until bit 127 is set; returns the
+// shift.
+X87_INLINE int Normalize128(uint64_t* hi, uint64_t* lo) {
+  int lz = Clz128(*hi, *lo);
+  if (lz >= 64) {
+    *hi = *lo << (lz - 64);
+    *lo = 0;
+  } else if (lz) {
+    *hi = *hi << lz | *lo >> (64 - lz);
+    *lo <<= lz;
+  }
+  return lz;
+}
+
 // Rounds a binary128 value times 2^extra to an extended register value
 // with RC (precision control does not apply to these instructions).
 Rounded RoundQ(Q q, int32_t extra, int rc) {
@@ -430,14 +440,7 @@ Rounded RoundQ(Q q, int32_t extra, int rc) {
     fh |= 1ull << 48;
   }
   uint64_t hi = (fh << 15) | (fl >> 49), lo = fl << 15;
-  int lz = hi ? std::countl_zero(hi) : 64 + std::countl_zero(lo);
-  if (lz >= 64) {
-    hi = lo << (lz - 64);
-    lo = 0;
-  } else if (lz > 0) {
-    hi = (hi << lz) | (lo >> (64 - lz));
-    lo <<= lz;
-  }
+  int lz = Normalize128(&hi, &lo);
   return RoundPack(sign, exp - lz + extra, hi, lo, 64, rc);
 }
 
@@ -671,7 +674,7 @@ F80 Get(const State& s, int i) { return s.r[Phys(s, i)]; }
 void Put(State& s, int i, F80 v) {
   int p = Phys(s, i);
   s.r[p] = v;
-  SetTag(s, p, ClassTag(v));
+  SetTag(s, p, int(run::Tag(run::ToV(v))));
 }
 void SetC1(State& s, bool on) {
   s.sw = static_cast<uint16_t>(on ? (s.sw | kC1) : (s.sw & ~kC1));
@@ -761,29 +764,23 @@ int PrecBits(uint32_t cw) {
 constexpr bool IsNormal(F80 v) {
   return ExpOf(v) - 1u < 0x7FFEu && (v.sig & kJ);
 }
-constexpr bool IsNormalOrZero(F80 v) { return IsNormal(v) || (v.se & 0x7FFF) == 0 && !v.sig; }
+constexpr bool IsNormalOrZero(F80 v) { return IsNormal(v) || IsZero(v); }
 
-int Clz128(uint64_t hi, uint64_t lo) {
-  return hi ? std::countl_zero(hi) : 64 + std::countl_zero(lo);
-}
-
-// a op b for two normal finite operands, in integers: the exact result
-// (128 significand bits, the last one sticky) rounded by RoundPack. This
-// is the common case; SoftFloat (below) covers the rest and is the
-// reference the fast path is tested against (tests/x87_test.cpp).
-// Single precision, round to nearest, two normal operands with 24-bit
-// significands: the game's common case. The core is run::Fast24 (x87.h),
-// which lifted runs inline, so both paths share it.
+// The PC=24 core is run::Fast24 (x87.h), shared with lifted runs.
 X87_INLINE bool Fast24(int rc, MathOp op, F80 a, F80 b, Result* r) {
   if (op == MathOp::Div) return false;
   run::RV rv;
   run::F24Op o = op == MathOp::Add ? run::F24Op::Add
                : op == MathOp::Sub ? run::F24Op::Sub : run::F24Op::Mul;
   if (!run::Fast24(o, rc, run::ToV(a), run::ToV(b), &rv)) return false;
-  *r = {{rv.sig, uint16_t(rv.meta)}, uint16_t(rv.meta >> 16), ((rv.meta >> 32) & 1) != 0};
+  *r = {run::ToF80(run::Val(rv)), uint16_t(run::Flags(rv)), run::Up(rv)};
   return true;
 }
 
+// a op b for two normal finite operands, in integers: the exact result
+// (128 significand bits, the last one sticky) rounded by RoundPack. This
+// is the common case; SoftFloat (below) covers the rest and is the
+// reference the fast paths are tested against (tests/x87_fast_test.cpp).
 X87_INLINE Result FastArith(uint32_t cw, MathOp op, F80 a, F80 b) {
   if ((cw & 0x0300) == 0) {  // PC=24
     Result r;
@@ -870,15 +867,7 @@ X87_INLINE Result FastArith(uint32_t cw, MathOp op, F80 a, F80 b) {
         }
         // Cancellation by more than one bit only happens when the
         // exponents differ by at most one, so no sticky bit was jammed.
-        int lz = Clz128(hi, lo);
-        if (lz >= 64) {
-          hi = lo << (lz - 64);
-          lo = 0;
-        } else if (lz) {
-          hi = hi << lz | lo >> (64 - lz);
-          lo <<= lz;
-        }
-        exp -= lz;
+        exp -= Normalize128(&hi, &lo);
       }
       break;
     }
@@ -1270,13 +1259,6 @@ bool TwoOperandUnderflow(State& s) {
   return true;
 }
 
-void FinishTwoOperand(State& s, const Result& r) {
-  Raise(s, r.flags);
-  SetC1(s, r.up);
-  Put(s, 1, r.v);
-  Pop(s);
-}
-
 Result FromRounded(const Rounded& r, uint16_t extra) {
   return {r.v, static_cast<uint16_t>(r.flags | extra), r.up};
 }
@@ -1318,12 +1300,7 @@ void Init(State& s) {
   s.fop = 0;
 }
 
-uint16_t StatusWord(const State& s) {
-  uint16_t sw = static_cast<uint16_t>(s.sw & ~(kTopMask | kES | kBusy));
-  sw |= static_cast<uint16_t>(s.top << 11);
-  if (s.sw & ~s.cw & kExceptionMask) sw |= kES | kBusy;
-  return sw;
-}
+uint16_t StatusWord(const State& s) { return run::StatusWordOf(s.sw, s.top, s.cw); }
 
 uint16_t ControlWord(const State& s) { return s.cw; }
 
@@ -1342,17 +1319,23 @@ uint16_t TagWord(const State& s) { return s.tw; }
 // --- loads -----------------------------------------------------------
 
 namespace {
+// A value converted from m32/m64 as FLD loads it: an SNaN raises IE and
+// becomes quiet, a denormal source raises DE.
+F80 Converted(F80 v, bool denormal, uint16_t* flags) {
+  if (IsSNaN(v)) {
+    *flags = kIE;
+    return Quiet(v);
+  }
+  *flags = denormal ? kDE : 0;
+  return v;
+}
+
 void LoadConverted(State& s, F80 v, bool denormal) {
   Wait(s);
   SetC1(s, false);
   if (!CheckPush(s)) return;
-  uint16_t flags = 0;
-  if (IsSNaN(v)) {
-    flags |= kIE;
-    v = Quiet(v);
-  } else if (denormal) {
-    flags |= kDE;
-  }
+  uint16_t flags;
+  v = Converted(v, denormal, &flags);
   Raise(s, flags);
   PushRaw(s, v);
 }
@@ -1454,14 +1437,7 @@ X87_INLINE bool FastStore(uint32_t cw, F80 v, int mant, int bias, int emax, Stor
   if (e < 1 || e > emax) return false;
   const int drop = 63 - mant;
   uint64_t keep = v.sig >> drop, rest = v.sig & ((1ull << drop) - 1);
-  const uint64_t half = 1ull << (drop - 1);
-  bool inc;
-  switch (RcOf(cw)) {
-    case 0: inc = rest > half || (rest == half && (keep & 1)); break;
-    case 1: inc = sign && rest; break;
-    case 2: inc = !sign && rest; break;
-    default: inc = false;
-  }
+  bool inc = RpInc(RcOf(cw), sign, keep, rest << (64 - drop));
   if (inc && ++keep == (2ull << mant)) {
     keep >>= 1;
     if (++e > emax) return false;  // overflow
@@ -1693,21 +1669,6 @@ void Abs(State& s) {
 }
 
 namespace {
-Result SqrtOf(uint32_t cw, F80 v);
-}  // namespace
-
-void Sqrt(State& s) {
-  Wait(s);
-  SetC1(s, false);
-  if (Empty(s, 0)) {
-    Underflow(s);
-    Put(s, 0, kIndefinite);
-    return;
-  }
-  Commit(s, 0, SqrtOf(s.cw, Get(s, 0)));
-}
-
-namespace {
 Result SqrtOf(uint32_t cw, F80 v) {
   Result r{};
   if (IsUnsupported(v)) {
@@ -1738,6 +1699,17 @@ Result SqrtOf(uint32_t cw, F80 v) {
   return r;
 }
 }  // namespace
+
+void Sqrt(State& s) {
+  Wait(s);
+  SetC1(s, false);
+  if (Empty(s, 0)) {
+    Underflow(s);
+    Put(s, 0, kIndefinite);
+    return;
+  }
+  Commit(s, 0, SqrtOf(s.cw, Get(s, 0)));
+}
 
 void RndInt(State& s) {
   Wait(s);
@@ -2180,7 +2152,8 @@ void Patan(State& s) {
     }
     r = Transcendental(RoundQ(result, extra, rc), den);
   }
-  FinishTwoOperand(s, r);
+  Commit(s, 1, r);
+  Pop(s);
 }
 
 void F2xm1(State& s) {
@@ -2302,7 +2275,8 @@ void Yl2x(State& s) {
     Q result = Odd([&] { return QMul(ym, z); });
     r = Transcendental(RoundQ(result, ny.exp, rc), den);
   }
-  FinishTwoOperand(s, r);
+  Commit(s, 1, r);
+  Pop(s);
 }
 
 void Yl2xp1(State& s) {
@@ -2381,7 +2355,8 @@ void Yl2xp1(State& s) {
       r = Transcendental(RoundQ(result, extra, rc), den);
     }
   }
-  FinishTwoOperand(s, r);
+  Commit(s, 1, r);
+  Pop(s);
 }
 
 void Xch(State& s, int i) {
@@ -2468,7 +2443,7 @@ void ReadEnv(State& s, const uint8_t* in) {
   // every other register from its contents.
   s.tw = 0;
   for (int p = 0; p < 8; ++p) {
-    int tag = ((tw >> (2 * p)) & 3) == 3 ? 3 : ClassTag(s.r[p]);
+    int tag = ((tw >> (2 * p)) & 3) == 3 ? 3 : int(run::Tag(run::ToV(s.r[p])));
     SetTag(s, p, tag);
   }
 }
@@ -2522,14 +2497,9 @@ RV Pack(const Result& r) {
   return {r.v.sig, uint64_t(r.v.se) | uint64_t(r.flags) << 16 | uint64_t(r.up) << 32};
 }
 SV Pack(const Stored& r) { return {r.bits, uint64_t(r.flags) | uint64_t(r.up) << 16}; }
-RV Loaded(F80 v, bool denormal) {  // as LoadConverted
-  uint16_t flags = 0;
-  if (IsSNaN(v)) {
-    flags = kIE;
-    v = Quiet(v);
-  } else if (denormal) {
-    flags = kDE;
-  }
+RV Loaded(F80 v, bool denormal) {
+  uint16_t flags;
+  v = Converted(v, denormal, &flags);
   return {v.sig, uint64_t(v.se) | uint64_t(flags) << 16};
 }
 uint32_t Compared(F80 a, F80 b, bool quiet, bool b_denormal) {
@@ -2539,36 +2509,19 @@ uint32_t Compared(F80 a, F80 b, bool quiet, bool b_denormal) {
 }
 }  // namespace
 
-// Fast24 first, before the general dispatch: in the game nearly every
-// run operation is a PC=24, round-to-nearest add/sub/mul of 24-bit values.
-X87_INLINE bool Try24(uint32_t cw, Op op, F80 dst, F80 src, RV* out) {
-  return (cw & 0x0300) == 0 && Fast24Op(int(cw >> 10) & 3, op, ToV(dst), ToV(src), out);
-}
-
+// The inline *Fast forms in x87.h have already tried Fast24.
 RV Arith(uint32_t cw, Op op, V dv, V sv) {
-  F80 dst = ToF80(dv), src = ToF80(sv);
-  RV r;
-  if (!g_softfloat_only && Try24(cw, op, dst, src, &r)) return r;
-  return Pack(DoOp(cw, op, dst, src, false));
+  return Pack(DoOp(cw, op, ToF80(dv), ToF80(sv), false));
 }
 RV ArithF32(uint32_t cw, Op op, V sv, uint32_t bits) {
-  F80 st0 = ToF80(sv);
-  uint32_t e = (bits >> 23) & 0xFF;
-  if (e - 1 < 254 && !g_softfloat_only) {  // normal m32: exact, no DE
-    F80 v{(uint64_t(bits & 0x7FFFFF) | 0x800000) << 40,
-          uint16_t((bits >> 31) << 15 | (e - 127 + 0x3FFF))};
-    RV r;
-    if (Try24(cw, op, st0, v, &r)) return r;
-  }
   bool den;
-  F80 v = ::ds1::x87::FromF32(bits, &den);
-  return Pack(DoOp(cw, op, st0, v, den));
+  F80 v = FromF32(bits, &den);
+  return Pack(DoOp(cw, op, ToF80(sv), v, den));
 }
 RV ArithF64(uint32_t cw, Op op, V sv, uint64_t bits) {
-  F80 st0 = ToF80(sv);
   bool den;
-  F80 v = ::ds1::x87::FromF64(bits, &den);
-  return Pack(DoOp(cw, op, st0, v, den));
+  F80 v = FromF64(bits, &den);
+  return Pack(DoOp(cw, op, ToF80(sv), v, den));
 }
 RV ArithI16(uint32_t cw, Op op, V sv, int16_t v) {
   return Pack(DoOp(cw, op, ToF80(sv), ::ds1::x87::FromInt(v), false));

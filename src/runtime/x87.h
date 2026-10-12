@@ -11,8 +11,8 @@
 //   rounding (arithmetic, stores to m32/m64/int, frndint).
 // - Exceptions are assumed masked (Windows default 0x027F, game uses
 //   masked modes). Flags are accumulated sticky in the status word. If an
-//   exception occurs while its mask bit is clear, unmasked_fault is set so
-//   the runtime can report it; the masked response is still delivered.
+//   exception occurs while its mask bit is clear, unmasked_fault latches
+//   (checked by the tests); the masked response is still delivered.
 // - Stack overflow/underflow follow the masked response: IE + SF set, C1
 //   = 1 on overflow / 0 on underflow, result is the real indefinite.
 // - Compare results go to C0/C2/C3 of the status word (for fnstsw+sahf);
@@ -38,15 +38,14 @@ struct State {
                    // (00 valid, 01 zero, 10 special, 11 empty)
   uint8_t top;     // 0..7
   bool unmasked_fault;  // an unmasked exception was raised (see above)
-  // Last instruction / operand pointers, for fnstenv/fnsave. The lifter
-  // stores the guest VA of each x87 instruction that has a memory operand
-  // here; others may leave them stale (no game code inspects them).
+  // Last instruction / operand pointers: zeroed by finit and only carried
+  // through fnstenv/fldenv and fnsave/frstor (no game code inspects them).
   uint32_t fip, fdp;
   uint16_t fop;
 };
 
-// Test hook: add/sub/mul/div of normal operands take an integer fast
-// path; true sends them through SoftFloat, its reference.
+// Test hook: true disables every integer fast path (arithmetic, stores,
+// trig), leaving SoftFloat, their reference.
 extern bool g_softfloat_only;
 
 enum class Op : uint8_t { Add, Mul, Sub, SubR, Div, DivR };
@@ -134,14 +133,8 @@ void DecStp(State& s);
 
 // --- value-level operations for lifted x87 runs ----------------------
 //
-// The lifter turns straight-line stretches of x87 code ("runs") into code
-// that keeps the register stack in locals: one guard at the start checks
-// that no instruction in the run can fault (every register it reads is
-// valid, every slot it pushes into is empty, all exceptions masked), and
-// the state is written back once at the end. The run calls these pure
-// functions, which compute exactly what the State-based operations above
-// do for the same operands (those are built on them). See ARCHITECTURE.md
-// "x87 runs".
+// Pure forms of the operations above for lifted runs (ARCHITECTURE.md
+// "x87 runs"); both share the same cores, so results are identical.
 namespace run {
 
 // Lifted runs are used when true (DS1_X87_RUNS=0 disables them, for A/B).

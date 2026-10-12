@@ -9,7 +9,6 @@
 #include <map>
 #include <random>
 #include <string>
-#include <vector>
 
 #include "runtime/lifted.h"
 
@@ -176,7 +175,7 @@ uint32_t NImul2(int n, uint32_t a, uint32_t b, uint64_t* fo) {
 // One-operand MUL/IMUL, 32-bit: edx:eax = eax * b.
 void NMul1(bool sign, uint32_t a, uint32_t b, uint32_t* lo, uint32_t* hi,
            uint64_t* fo) {
-  uint32_t eax = a, edx, fl32;
+  uint32_t eax = a, edx;
   uint64_t fl;
   if (sign)
     asm volatile("imull %[b]\n pushfq\n pop %[fl]"
@@ -184,7 +183,6 @@ void NMul1(bool sign, uint32_t a, uint32_t b, uint32_t* lo, uint32_t* hi,
   else
     asm volatile("mull %[b]\n pushfq\n pop %[fl]"
                  : "+a"(eax), "=d"(edx), [fl] "=&r"(fl) : [b] "r"(b) : "cc");
-  (void)fl32;
   *lo = eax;
   *hi = edx;
   *fo = fl;
@@ -252,7 +250,7 @@ void TestWidth() {
     SH("shr", NShr, L::Shr<N>(f, a, cnt), smask)
     SH("sar", NSar, L::Sar<N>(f, a, cnt), mc ? (kAll & ~AF & ~(mc == 1 ? 0u : OF)) : kAll)
     // Rotates touch only CF and OF; OF defined for count 1 only.
-    uint32_t rmask = mc == 0 ? kAll : ((kAll & ~(CF | OF)) | CF | (mc == 1 ? OF : 0));
+    uint32_t rmask = mc <= 1 ? kAll : kAll & ~OF;
     SH("rol", NRol, L::Rol<N>(f, a, cnt), rmask)
     SH("ror", NRor, L::Ror<N>(f, a, cnt), rmask)
     SH("rcl", NRcl, L::Rcl<N>(f, a, cnt), rmask)

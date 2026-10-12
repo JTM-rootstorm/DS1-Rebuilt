@@ -448,7 +448,6 @@ uint16_t RandCw(Rng& r) {
 // random C0-C3, random TOP and tags.
 Image RandImage(Rng& r, int empty_pct, bool allow_odd = true) {
   Image im{};
-  std::memset(im.b, 0, sizeof im.b);
   Wr16(im.b, RandCw(r));
   Wr16(im.b + 2, 0xFFFF);
   uint16_t sw = static_cast<uint16_t>(r.U64() & 0x477F);  // C0-C3, flags, SF
@@ -564,8 +563,8 @@ void DumpMem(const char* tag, const uint8_t* m, int n) {
   std::printf("\n");
 }
 
-// Runs one case; returns true on agreement.
-bool RunCase(const OpDef& op, const Image& in, const uint8_t* mem_in,
+// Runs one case, counting and reporting disagreements in `st`.
+void RunCase(const OpDef& op, const Image& in, const uint8_t* mem_in,
              Stats& st) {
   alignas(16) Image hi = in, mo = in;
   alignas(16) uint8_t hm[32], mm[32];
@@ -600,9 +599,6 @@ bool RunCase(const OpDef& op, const Image& in, const uint8_t* mem_in,
       }
     }
   }
-  if (op.kind == Kind::Transcendental && ok == false && regs_same == false) {
-    // handled below
-  }
   if (op.kind == Kind::Transcendental) {
     if (worst > st.max_ulp) st.max_ulp = worst;
     if (worst == 1) ++st.ulp1;
@@ -630,7 +626,6 @@ bool RunCase(const OpDef& op, const Image& in, const uint8_t* mem_in,
       }
     }
   }
-  return ok;
 }
 
 // --- per-op value profiles -------------------------------------------

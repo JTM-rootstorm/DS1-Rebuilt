@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <map>
 #include <random>
 #include <string>
 
@@ -43,6 +42,7 @@ namespace {
 constexpr uint32_t kMemVa = 0x00200000;    // operand at [eax]
 constexpr uint32_t kStackVa = 0x00300000;  // guest stack (ret pops 4)
 
+using ds1::x87::F80;
 using NativeFn = void (*)(void* mem, const void* in, void* out, uint64_t* flags,
                           uint64_t* rax);
 
@@ -61,11 +61,6 @@ NativeFn MakeNative(uint8_t* page, const X87Form& f) {
   std::memcpy(p, post, sizeof post);
   return reinterpret_cast<NativeFn>(page);
 }
-
-struct F80 {
-  uint64_t sig;
-  uint16_t se;
-};
 
 F80 RandomValue(std::mt19937_64& g) {
   F80 v{};
@@ -242,11 +237,9 @@ int main(int argc, char** argv) {
         if (hs != ls) why += " sw";
       }
       if (std::memcmp(hw + 8, lf + 8, 2)) why += " tw";
-      bool only_ulp = true;
       for (int r = 0; r < 8; r++) {
         if (std::memcmp(hw + 28 + r * 10, lf + 28 + r * 10, 10) == 0) continue;
         if (transc && Ulps(hw + 28 + r * 10, lf + 28 + r * 10) <= 1) continue;
-        only_ulp = false;
         why += " st" + std::to_string(r);
       }
       if (std::memcmp(hm, mem.ptr(kMemVa), 32)) why += " mem";
@@ -260,7 +253,6 @@ int main(int argc, char** argv) {
         if (transc && std::memcmp(hw + 28, lf + 28, 80)) approx++;
         continue;
       }
-      (void)only_ulp;
       if (++fails <= 3) {
         std::printf("FAIL %-28s (form %d, e.g. %08X):%s\n", text.c_str(), fi,
                     f.example_va, why.c_str());

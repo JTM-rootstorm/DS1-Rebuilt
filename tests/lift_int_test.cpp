@@ -18,6 +18,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <vector>
 
 #include "lift_int_forms.h"
 #include "runtime/guest_memory.h"
@@ -52,7 +53,7 @@ struct Regs {
 
 using NativeFn = void (*)(Regs*);
 
-uint8_t* Stub(uint8_t* p, const IntForm& f) {
+void Stub(uint8_t* p, const IntForm& f) {
   static const uint8_t pre[] = {
       0x53, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,  // push
       0x49, 0x89, 0xFF,                                            // mov r15,rdi
@@ -72,7 +73,6 @@ uint8_t* Stub(uint8_t* p, const IntForm& f) {
   std::memcpy(p, f.bytes, f.len);
   p += f.len;
   std::memcpy(p, post, sizeof post);
-  return p + sizeof post;
 }
 
 sigjmp_buf g_jmp;

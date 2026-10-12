@@ -88,7 +88,7 @@ M4 findings:
   forced inlining of the arithmetic chain (F80s and result structs went
   through memory between calls: store-forwarding stalls) and no stack
   protector in ds1_x87. tests/x87_fast_test checks the fast paths against
-  SoftFloat (portable; 4M cases, mutation-checked); x87_test and lift_x87
+  SoftFloat (portable; 2M cases, mutation-checked); x87_test and lift_x87
   still pass against the hardware.
 - Forest past the farm (the user's save, rain, many skinned models):
   27.7 -> 16.7 ms/frame (the game's 60 fps cap) with lifter x87 runs
@@ -272,9 +272,9 @@ prints the guest address and lifted host backtrace.
 - Transcendentals are correctly rounded in a sampled check; the AMD host
   itself was off by up to 0.58 ulp on fptan, so 1-ulp diffs vs host are
   expected (0.4-8.5% of cases).
-- Cost at PC=24/chop: fadd ~19 ns, fld/fstp m32 ~10 ns, fsqrt ~24 ns,
-  fsin ~210 ns, fsincos ~390 ns. Fine for bring-up; a proven-equivalent
-  fast path can come later.
+- SoftFloat-only cost at PC=24/chop (before the integer fast paths):
+  fadd ~19 ns, fld/fstp m32 ~10 ns, fsqrt ~24 ns, fsin ~210 ns, fsincos
+  ~390 ns.
 
 ## Lifter notes
 - Ghidra's 59 "unresolved" computed jumps are all `jmp [IAT]` thunks (22)

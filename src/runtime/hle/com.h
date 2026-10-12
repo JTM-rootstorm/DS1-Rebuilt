@@ -49,8 +49,6 @@ uint32_t Release(uint32_t guest);
 bool GuidEq(uint32_t guest_guid, const guest::GUID& g);
 guest::GUID ReadGuid(uint32_t va);
 
-constexpr uint32_t kS_OK = 0, kE_NOINTERFACE = 0x80004002,
-                   kE_INVALIDARG = 0x80070057, kE_FAIL = 0x80004005,
-                   kE_OUTOFMEMORY = 0x8007000E;
+constexpr uint32_t kS_OK = 0, kE_NOINTERFACE = 0x80004002;
 
 }  // namespace ds1::com

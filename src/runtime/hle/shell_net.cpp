@@ -8,13 +8,12 @@
 // Networking: multiplayer goes through DirectPlay8 (not provided), so
 // wsock32 only needs to answer the host-name queries the game makes.
 
-#include <sys/stat.h>
-
 #include <cstring>
 #include <string>
 
 #include "runtime/hle/hle.h"
 #include "runtime/hle/kernel32_state.h"
+#include "runtime/hle/win32.h"
 #include "runtime/log.h"
 
 namespace ds1::hle {
@@ -41,7 +40,7 @@ HLE("shfolder.dll", SHGetFolderPathA, 5) {
   std::string p = FolderFor(csidl);
   if (p.empty()) {
     WarnF("SHGetFolderPathA(CSIDL %X): unknown folder\n", csidl);
-    return 0x80070057;  // E_INVALIDARG
+    return win32::kEInvalidArg;
   }
   // Create it on the host either way: Windows has these folders.
   MakeDirs(HostPath(p));
@@ -54,11 +53,10 @@ HLE("shfolder.dll", SHGetFolderPathW, 5) {
   std::string p = FolderFor(csidl);
   if (p.empty()) {
     WarnF("SHGetFolderPathW(CSIDL %X): unknown folder\n", csidl);
-    return 0x80070057;
+    return win32::kEInvalidArg;
   }
   MakeDirs(HostPath(p));
-  for (size_t i = 0; i <= p.size(); i++)
-    Wr16(out + 2 * uint32_t(i), uint8_t(p.c_str()[i]));
+  PutWStr(out, p);
   return 0;
 }
 

@@ -56,8 +56,8 @@ void FillContext(uint32_t ctx, const Ctx& c, uint32_t eip, uint32_t esp) {
 // Walks the SEH chain for an exception. Returns true if a handler asked to
 // continue execution, false if no handler took it. A handler that runs an
 // __except block never returns here (GuestResume unwinds past us).
-bool Dispatch_(Ctx& c, uint32_t code, uint32_t flags, uint32_t nparams,
-               const uint32_t* params, uint32_t eip) {
+bool DispatchException(Ctx& c, uint32_t code, uint32_t flags, uint32_t nparams,
+                       const uint32_t* params, uint32_t eip) {
   uint32_t teb = c.fs_base;
   uint32_t saved_esp = c.esp;
   // Scratch space for the records below the current stack.
@@ -111,7 +111,7 @@ HLE("kernel32.dll", RaiseException, 4) {
   uint32_t eip = Rd32(c.esp);  // return address: where Windows reports it
   uint32_t params[15] = {};
   for (uint32_t i = 0; i < std::min<uint32_t>(n, 15); i++) params[i] = Rd32(args + 4 * i);
-  if (!Dispatch_(c, code, flags & kExceptionNoncontinuable, n, params, eip))
+  if (!DispatchException(c, code, flags & kExceptionNoncontinuable, n, params, eip))
     FatalF("unhandled guest exception %08X raised from %08X (params %u: %08X %08X)",
            code, eip, n, params[0], params[1]);
   return c.eax;
@@ -177,7 +177,7 @@ bool RaiseAccessViolation(Ctx& c, bool write, uint32_t addr) {
            "(esp %08X, stack %08X-%08X)", addr, c.esp, t->stack_lo, t->stack_hi);
   c.esp -= kGap;
   uint32_t params[2] = {write ? 1u : 0u, addr};
-  bool cont = Dispatch_(c, 0xC0000005, 0, 2, params, 0);
+  bool cont = DispatchException(c, 0xC0000005, 0, 2, params, 0);
   c.esp = saved_esp;
   return cont;
 }

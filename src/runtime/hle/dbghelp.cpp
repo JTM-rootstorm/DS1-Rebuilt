@@ -15,13 +15,13 @@
 
 #include <cctype>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 
 #include "runtime/hle/hle.h"
 #include "runtime/log.h"
 
 namespace ds1::hle {
+namespace {
 
 std::string UndnameMsvc(const std::string& mangled, uint32_t flags) {
   int flags_llvm = llvm::MSDF_None;
@@ -99,8 +99,6 @@ std::string UndnameMsvc(const std::string& mangled, uint32_t flags) {
   }
   return r;
 }
-
-namespace {
 
 // UnDecorateSymbolName(name, out, maxlen, flags) -> length or 0.
 HLE("dbghelp.dll", UnDecorateSymbolName, 4) {

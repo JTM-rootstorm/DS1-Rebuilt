@@ -97,6 +97,10 @@ void PutStr(uint32_t va, const std::string& s) {
   std::memcpy(GPtr(va), s.c_str(), s.size() + 1);
 }
 
+void PutWStr(uint32_t va, const std::string& s) {
+  for (size_t i = 0; i <= s.size(); i++) Wr16(va + 2 * uint32_t(i), uint8_t(s.c_str()[i]));
+}
+
 uint32_t CallGuest(Ctx& c, uint32_t va, std::initializer_list<uint32_t> args) {
   uint32_t saved = c.esp;
   // Guest code runs here: faults are guest access violations again.
@@ -183,7 +187,7 @@ static uint32_t RunGuestThread(Thread* t, uint32_t entry,
   } catch (const GuestThreadExit& e) {
     r = e.code;
   }
-  OnGuestThreadFinished(t->tid, r);
+  OnGuestThreadFinished(t->tid);
   return r;
 }
 

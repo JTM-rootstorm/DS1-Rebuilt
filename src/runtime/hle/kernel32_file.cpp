@@ -44,7 +44,6 @@ struct FileObject : KObject {
     if (fd >= 0) close(fd);
   }
   int fd = -1;
-  std::string host_path;
 };
 
 struct FindObject : KObject {
@@ -98,7 +97,8 @@ std::string AbsGuest(std::string p) {
   return out;
 }
 
-// Case-insensitive resolution of `rel` components under host dir `root`.
+// Case-insensitive resolution of path components `comps` under host dir
+// `root`.
 std::string Resolve(const std::string& root, const std::vector<std::string>& comps) {
   std::string cur = root;
   for (size_t i = 0; i < comps.size(); i++) {
@@ -177,10 +177,8 @@ constexpr uint32_t kInvalidHandle = 0xFFFFFFFF;
 
 // FILETIME from a POSIX time.
 void PutFileTime(uint32_t va, const timespec& ts) {
-  uint64_t ft = uint64_t(ts.tv_sec) * 10000000ull + uint64_t(ts.tv_nsec) / 100 +
-                116444736000000000ull;
-  Wr32(va, uint32_t(ft));
-  Wr32(va + 4, uint32_t(ft >> 32));
+  Wr64(va, uint64_t(ts.tv_sec) * 10000000ull + uint64_t(ts.tv_nsec) / 100 +
+               kFileTimeUnixEpoch);
 }
 
 uint32_t AttributesOf(const struct stat& st, const std::string& name) {
@@ -275,7 +273,6 @@ HLE("kernel32.dll", CreateFileA, 7) {
   DS1_TRACE("  CreateFileA(%s) -> %s\n", gpath.c_str(), path.c_str());
   auto f = std::make_shared<FileObject>();
   f->fd = fd;
-  f->host_path = path;
   SetLastError(exists && (disp == 2 || disp == 4) ? kErrorAlreadyExists : 0);
   return NewHandle(f);
 }
@@ -423,40 +420,32 @@ HLE("kernel32.dll", RemoveDirectoryA, 1) {
 HLE("kernel32.dll", GetCurrentDirectoryA, 2) {
   uint32_t size = Arg(c, 0), buf = Arg(c, 1);
   std::string d = GuestCurrentDir();
-  if (d.size() + 1 > size) return uint32_t(d.size() + 1);
-  PutStr(buf, d);
-  return uint32_t(d.size());
+  return CopyOut(buf, size, d);
 }
 
 HLE("kernel32.dll", GetFullPathNameA, 4) {
   std::string full = AbsGuest(GStr(Arg(c, 0)));
   uint32_t size = Arg(c, 1), buf = Arg(c, 2), filepart = Arg(c, 3);
-  if (full.size() + 1 > size) return uint32_t(full.size() + 1);
-  PutStr(buf, full);
-  if (filepart) {
+  uint32_t r = CopyOut(buf, size, full);
+  if (r == full.size() && filepart) {
     size_t s = full.find_last_of('\\');
     Wr32(filepart, s == std::string::npos || s + 1 == full.size()
                        ? 0
                        : buf + uint32_t(s + 1));
   }
-  return uint32_t(full.size());
+  return r;
 }
 
 HLE("kernel32.dll", GetLongPathNameA, 3) {
   std::string full = GStr(Arg(c, 0));
   uint32_t buf = Arg(c, 1), size = Arg(c, 2);
-  if (full.size() + 1 > size) return uint32_t(full.size() + 1);
-  if (buf != Arg(c, 0)) PutStr(buf, full);
-  return uint32_t(full.size());
+  return CopyOut(buf, size, full);
 }
 
 HLE("kernel32.dll", GetTempPathA, 2) {
   std::string t = "C:\\TEMP\\";
-  mkdir((UserDataRoot() + "/TEMP").c_str(), 0755);
-  uint32_t size = Arg(c, 0), buf = Arg(c, 1);
-  if (t.size() + 1 > size) return uint32_t(t.size() + 1);
-  PutStr(buf, t);
-  return uint32_t(t.size());
+  MakeDirs(UserDataRoot() + "/TEMP");
+  return CopyOut(Arg(c, 1), Arg(c, 0), t);
 }
 
 HLE("kernel32.dll", GetTempFileNameA, 4) {
@@ -559,15 +548,9 @@ HLE("kernel32.dll", GetVolumeInformationA, 8) {
 
 HLE("kernel32.dll", GetDiskFreeSpaceExA, 4) {
   // 8 GiB free of 64 GiB, reported in 64-bit ULARGE_INTEGERs.
-  auto put = [](uint32_t va, uint64_t v) {
-    if (va) {
-      Wr32(va, uint32_t(v));
-      Wr32(va + 4, uint32_t(v >> 32));
-    }
-  };
-  put(Arg(c, 1), 8ull << 30);
-  put(Arg(c, 2), 64ull << 30);
-  put(Arg(c, 3), 8ull << 30);
+  if (Arg(c, 1)) Wr64(Arg(c, 1), 8ull << 30);
+  if (Arg(c, 2)) Wr64(Arg(c, 2), 64ull << 30);
+  if (Arg(c, 3)) Wr64(Arg(c, 3), 8ull << 30);
   return 1;
 }
 

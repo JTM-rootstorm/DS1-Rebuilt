@@ -8,13 +8,13 @@
 namespace ds1::win32 {
 
 // Error codes.
+inline constexpr uint32_t kErrorSuccess = 0;
 inline constexpr uint32_t kErrorFileNotFound = 2;
 inline constexpr uint32_t kErrorPathNotFound = 3;
 inline constexpr uint32_t kErrorAccessDenied = 5;
 inline constexpr uint32_t kErrorInvalidHandle = 6;
 inline constexpr uint32_t kErrorNotEnoughMemory = 8;
 inline constexpr uint32_t kErrorNoMoreFiles = 18;
-inline constexpr uint32_t kErrorHandleEof = 38;
 inline constexpr uint32_t kErrorFileExists = 80;
 inline constexpr uint32_t kErrorInvalidParameter = 87;
 inline constexpr uint32_t kErrorInsufficientBuffer = 122;
@@ -22,9 +22,15 @@ inline constexpr uint32_t kErrorModNotFound = 126;
 inline constexpr uint32_t kErrorProcNotFound = 127;
 inline constexpr uint32_t kErrorAlreadyExists = 183;
 inline constexpr uint32_t kErrorEnvVarNotFound = 203;
+inline constexpr uint32_t kErrorMoreData = 234;
 inline constexpr uint32_t kErrorInvalidAddress = 487;
+inline constexpr uint32_t kErrorClassAlreadyExists = 1410;
+inline constexpr uint32_t kErrorCannotFindWndClass = 1407;
+inline constexpr uint32_t kErrorResourceNameNotFound = 1814;
 inline constexpr uint32_t kErrorBufferOverflow = 111;
-inline constexpr uint32_t kErrorCallNotImplemented = 120;
+
+// HRESULTs.
+inline constexpr uint32_t kEInvalidArg = 0x80070057;
 
 // Memory.
 inline constexpr uint32_t kMemCommit = 0x1000;
@@ -33,7 +39,6 @@ inline constexpr uint32_t kMemDecommit = 0x4000;
 inline constexpr uint32_t kMemRelease = 0x8000;
 inline constexpr uint32_t kMemFree = 0x10000;
 inline constexpr uint32_t kMemPrivate = 0x20000;
-inline constexpr uint32_t kMemMapped = 0x40000;
 inline constexpr uint32_t kMemTopDown = 0x100000;
 inline constexpr uint32_t kMemImage = 0x1000000;
 inline constexpr uint32_t kPageNoAccess = 0x01;

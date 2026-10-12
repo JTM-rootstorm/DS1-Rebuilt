@@ -71,7 +71,7 @@ uint32_t Release(uint32_t guest) {
       // Poison the guest block so a use-after-release is caught.
       Wr32(guest, 0);
       Wr32(guest + 4, 0);
-      FindHeap(g_proc->process_heap)->Free(guest);
+      HeapFreeProcess(guest);
     }
   }
   return left;  // `dead` destroys the host object outside the lock

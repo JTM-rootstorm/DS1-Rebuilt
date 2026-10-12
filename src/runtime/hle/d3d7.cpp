@@ -39,7 +39,7 @@ struct VertexBuffer : com::Object {
   uint32_t mem = 0;
   uint32_t stride = 0;
   ~VertexBuffer() override {
-    if (mem) FindHeap(g_proc->process_heap)->Free(mem);
+    if (mem) HeapFreeProcess(mem);
   }
 };
 
@@ -242,7 +242,7 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::EnumDevices", D3D7_EnumDevices, 3) {
     std::memcpy(GPtr(desc), &dd, sizeof dd);
     if (!CallGuest(c, cb, {buf, buf + 96, desc, ctx})) break;
   }
-  FindHeap(g_proc->process_heap)->Free(buf);
+  HeapFreeProcess(buf);
   return D3D_OK;
 }
 
@@ -254,7 +254,7 @@ HLE_NAMED("ddraw.dll", "IDirect3D7::EnumZBufferFormats", D3D7_EnumZBufferFormats
     PixelFormatFromFormat(f, G<guest::DDPIXELFORMAT>(pf));
     if (!CallGuest(c, cb, {pf, ctx})) break;
   }
-  FindHeap(g_proc->process_heap)->Free(pf);
+  HeapFreeProcess(pf);
   return D3D_OK;
 }
 
@@ -371,7 +371,7 @@ HLE_NAMED("ddraw.dll", "IDirect3DDevice7::EnumTextureFormats", D3DD7_EnumTexture
     PixelFormatFromFormat(f, G<guest::DDPIXELFORMAT>(pf));
     if (!CallGuest(c, cb, {pf, ctx})) break;
   }
-  FindHeap(g_proc->process_heap)->Free(pf);
+  HeapFreeProcess(pf);
   return D3D_OK;
 }
 

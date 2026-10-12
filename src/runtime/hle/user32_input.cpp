@@ -10,7 +10,6 @@
 
 #include "runtime/hle/hle.h"
 #include "runtime/hle/input_state.h"
-#include "runtime/hle/kernel32_state.h"
 #include "runtime/hle/win32.h"
 #include "runtime/log.h"
 
@@ -263,8 +262,7 @@ HLE("user32.dll", GetSysColor, 1) {
 }
 
 HLE("user32.dll", SystemParametersInfoA, 4) {
-  uint32_t action = Arg(c, 0), uiparam = Arg(c, 1), pv = Arg(c, 2);
-  (void)uiparam;
+  uint32_t action = Arg(c, 0), pv = Arg(c, 2);
   switch (action) {
     case 0x0030:  // SPI_GETWORKAREA
       Wr32(pv, 0);
@@ -277,15 +275,17 @@ HLE("user32.dll", SystemParametersInfoA, 4) {
       if (pv) Wr32(pv, 0);
       return 1;
     case 0x0010:  // SPI_GETSCREENSAVEACTIVE
-    case 0x0034:  // SPI_GETSTICKYKEYS (struct: cbSize, dwFlags)
-    case 0x0035:  // SPI_SETSTICKYKEYS
+      if (pv) Wr32(pv, 0);
+      return 1;
+    case 0x0032:  // SPI_GETTOGGLEKEYS (struct: cbSize, dwFlags)
+    case 0x0034:  // SPI_GETSTICKYKEYS
     case 0x003A:  // SPI_GETFILTERKEYS
-    case 0x003B:  // SPI_SETFILTERKEYS
+      if (pv) Wr32(pv + 4, 0);
+      return 1;
     case 0x0011:  // SPI_SETSCREENSAVEACTIVE
-    case 0x0032:  // SPI_GETTOGGLEKEYS
     case 0x0033:  // SPI_SETTOGGLEKEYS
-      if (pv && (action & 1) == 0 && action != 0x0010) Wr32(pv + 4, 0);
-      if (pv && action == 0x0010) Wr32(pv, 0);
+    case 0x0035:  // SPI_SETSTICKYKEYS
+    case 0x003B:  // SPI_SETFILTERKEYS
       return 1;
     case 0x0068:  // SPI_GETWHEELSCROLLLINES
       if (pv) Wr32(pv, 3);
@@ -296,16 +296,15 @@ HLE("user32.dll", SystemParametersInfoA, 4) {
   }
 }
 
-std::atomic<uint32_t> g_next_msg_atom{0xC000};
-
 HLE("user32.dll", RegisterWindowMessageA, 1) {
   static std::mutex mu;
   static std::map<std::string, uint32_t> atoms;
+  static uint32_t next = 0xC000;
   std::lock_guard<std::mutex> l(mu);
   std::string n = Lower(GStr(Arg(c, 0)));
   auto it = atoms.find(n);
   if (it != atoms.end()) return it->second;
-  return atoms[n] = g_next_msg_atom++;
+  return atoms[n] = next++;
 }
 
 // Cursors and icons: opaque handles; the visible cursor is SDL's.

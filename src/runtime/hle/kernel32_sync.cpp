@@ -6,16 +6,15 @@
 // Simple and obviously correct for a game with a handful of threads; it
 // also makes WaitForMultipleObjects(wait-all) atomic for free.
 
-#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <condition_variable>
-#include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <vector>
 
 #include "runtime/hle/hle.h"
@@ -63,14 +62,6 @@ struct MutexObject : Waitable {
   uint32_t count = 0;
 };
 
-struct SemaphoreObject : Waitable {
-  SemaphoreObject(int32_t init, int32_t max)
-      : Waitable(Type::Semaphore), count(init), max_count(max) {}
-  bool Signalled(uint32_t) const override { return count > 0; }
-  void Acquire(uint32_t) override { count--; }
-  int32_t count, max_count;
-};
-
 struct ThreadObject : Waitable {
   ThreadObject() : Waitable(Type::Thread) {}
   bool Signalled(uint32_t) const override { return finished; }
@@ -78,7 +69,6 @@ struct ThreadObject : Waitable {
   uint32_t entry = 0, param = 0;
   bool started = false;
   bool finished = false;
-  uint32_t exit_code = 0x103;  // STILL_ACTIVE
 };
 
 std::map<std::string, std::shared_ptr<KObject>> g_named;  // under g_wait_mu
@@ -123,9 +113,7 @@ uint32_t WaitObjects(const std::vector<std::shared_ptr<Waitable>>& objs,
     if (timeout_ms == kInfinite) {
       g_wait_cv.wait(l);
     } else if (g_wait_cv.wait_until(l, deadline) == std::cv_status::timeout) {
-      // One last check happens on the next loop iteration only if we
-      // didn't time out; Windows behaves the same at the deadline.
-      return kWaitTimeout;
+      return kWaitTimeout;  // deadline passed: no re-check
     }
   }
 }
@@ -135,7 +123,7 @@ void SignalChanged() { g_wait_cv.notify_all(); }
 std::string NameOf(uint32_t va) { return va ? GStr(va) : std::string(); }
 
 // Registers a named object or returns the existing one (ERROR_ALREADY_EXISTS).
-template <typename T, typename Make>
+template <typename Make>
 uint32_t CreateNamed(uint32_t name_va, Make make) {
   std::string name = NameOf(name_va);
   std::shared_ptr<KObject> obj;
@@ -169,7 +157,7 @@ using namespace win32;
 
 HLE("kernel32.dll", CreateEventA, 4) {
   bool manual = Arg(c, 1), initial = Arg(c, 2);
-  return CreateNamed<EventObject>(Arg(c, 3), [&] {
+  return CreateNamed(Arg(c, 3), [&] {
     return std::make_shared<EventObject>(manual, initial);
   });
 }
@@ -198,7 +186,7 @@ HLE("kernel32.dll", ResetEvent, 1) {
 HLE("kernel32.dll", CreateMutexA, 3) {
   bool own = Arg(c, 1);
   uint32_t tid = CurrentThread()->tid;
-  uint32_t h = CreateNamed<MutexObject>(Arg(c, 2), [] {
+  uint32_t h = CreateNamed(Arg(c, 2), [] {
     return std::make_shared<MutexObject>();
   });
   if (own) {
@@ -209,16 +197,20 @@ HLE("kernel32.dll", CreateMutexA, 3) {
   return h;
 }
 
-HLE("kernel32.dll", OpenMutexA, 3) {
-  std::string name = NameOf(Arg(c, 2));
+// OpenMutexA/OpenFileMappingA(access, inherit, name): a new handle to an
+// existing named object of that type.
+uint32_t OpenNamed(uint32_t name_va, KObject::Type type) {
+  std::string name = NameOf(name_va);
   std::lock_guard<std::mutex> l(g_wait_mu);
   auto it = g_named.find(name);
-  if (it == g_named.end() || it->second->type != KObject::Type::Mutex) {
+  if (it == g_named.end() || it->second->type != type) {
     SetLastError(kErrorFileNotFound);
     return 0;
   }
   return NewHandle(it->second);
 }
+
+HLE("kernel32.dll", OpenMutexA, 3) { return OpenNamed(Arg(c, 2), KObject::Type::Mutex); }
 
 HLE("kernel32.dll", ReleaseMutex, 1) {
   auto m = std::dynamic_pointer_cast<MutexObject>(GetHandle(Arg(c, 0)));
@@ -343,7 +335,7 @@ struct MappingObject : KObject {
 };
 
 std::mutex g_views_mu;
-std::map<uint32_t, uint32_t> g_views;  // guest base -> reserved size
+std::set<uint32_t> g_views;  // guest bases of file views
 
 HLE("kernel32.dll", CreateFileMappingA, 6) {
   uint32_t file = Arg(c, 0), prot = Arg(c, 2), size_hi = Arg(c, 3),
@@ -373,18 +365,11 @@ HLE("kernel32.dll", CreateFileMappingA, 6) {
     g_proc->vm.Commit(base, uint32_t(m->size), Prot::RW);
     m->anon_base = base;
   }
-  return CreateNamed<MappingObject>(name, [&] { return m; });
+  return CreateNamed(name, [&] { return m; });
 }
 
 HLE("kernel32.dll", OpenFileMappingA, 3) {
-  std::string name = NameOf(Arg(c, 2));
-  std::lock_guard<std::mutex> l(g_wait_mu);
-  auto it = g_named.find(name);
-  if (it == g_named.end() || it->second->type != KObject::Type::Mapping) {
-    SetLastError(kErrorFileNotFound);
-    return 0;
-  }
-  return NewHandle(it->second);
+  return OpenNamed(Arg(c, 2), KObject::Type::Mapping);
 }
 
 uint32_t MapView(uint32_t h, uint32_t access, uint32_t off_hi, uint32_t off_lo,
@@ -408,7 +393,7 @@ uint32_t MapView(uint32_t h, uint32_t access, uint32_t off_hi, uint32_t off_lo,
   bool write = (access & 0x2) && m->writable;  // FILE_MAP_WRITE
   // Copy-on-write (FILE_MAP_COPY) and read views are private; write views
   // are shared with the file.
-  int flags = MAP_FIXED | ((access == 1) ? MAP_PRIVATE : write ? MAP_SHARED : MAP_PRIVATE);
+  int flags = MAP_FIXED | (write ? MAP_SHARED : MAP_PRIVATE);
   void* p = mmap(GPtr(base), size, PROT_READ | PROT_WRITE, flags, m->fd, off_t(off));
   if (p == MAP_FAILED) {
     g_proc->vm.Release(base);
@@ -419,7 +404,7 @@ uint32_t MapView(uint32_t h, uint32_t access, uint32_t off_hi, uint32_t off_lo,
   // are already accessible through the file mapping).
   g_proc->mem.Commit(base, size, write ? Prot::RW : Prot::R);
   std::lock_guard<std::mutex> l(g_views_mu);
-  g_views[base] = size;
+  g_views.insert(base);
   return base;
 }
 
@@ -434,17 +419,12 @@ HLE("kernel32.dll", MapViewOfFileEx, 6) {
 
 HLE("kernel32.dll", UnmapViewOfFile, 1) {
   uint32_t base = Arg(c, 0);
-  uint32_t size;
   {
     std::lock_guard<std::mutex> l(g_views_mu);
-    auto it = g_views.find(base);
-    if (it == g_views.end()) return 1;  // pagefile views: nothing to do
-    size = it->second;
-    g_views.erase(it);
+    if (!g_views.erase(base)) return 1;  // pagefile views: nothing to do
   }
   // Release replaces the file mapping with an inaccessible anonymous one.
   // Don't zero first: the pages are discarded and may be read-only.
-  (void)size;
   g_proc->vm.Release(base, false);
   return 1;
 }
@@ -452,14 +432,11 @@ HLE("kernel32.dll", UnmapViewOfFile, 1) {
 }  // namespace
 }  // namespace hle
 
-void OnGuestThreadFinished(uint32_t tid, uint32_t code) {
+void OnGuestThreadFinished(uint32_t tid) {
   {
     std::lock_guard<std::mutex> l(g_wait_mu);
     auto it = g_thread_objs.find(tid);
-    if (it != g_thread_objs.end()) {
-      it->second->finished = true;
-      it->second->exit_code = code;
-    }
+    if (it != g_thread_objs.end()) it->second->finished = true;
   }
   SignalChanged();
 }

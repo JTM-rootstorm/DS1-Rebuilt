@@ -28,9 +28,9 @@ inline constexpr uint32_t kModuleRegionSize = 0x00200000;
 
 using Fn = uint32_t (*)(Ctx& c);
 
+// A handler, registered under (dll, export name), e.g. ("kernel32.dll",
+// "Sleep") or ("mss32.dll", "_AIL_startup@0").
 struct Def {
-  const char* dll;   // lower case, e.g. "kernel32.dll"
-  const char* name;  // export name as imported, e.g. "_AIL_startup@0"
   int nargs;
   Fn fn;
 };
@@ -59,6 +59,15 @@ uint32_t ProcAddress(uint32_t hmodule, const std::string& name);
 uint32_t ThunkFor(const std::string& dll, const std::string& name);
 
 void SetLastError(uint32_t e);
+
+// Writes s + NUL to a counted guest buffer the Win32 way: returns the
+// length written without NUL, or the size needed (with NUL) if it does not
+// fit.
+uint32_t CopyOut(uint32_t buf, uint32_t size, const std::string& s);
+// The NLS convention (GetLocaleInfo, GetDateFormat): `cap` characters
+// (WCHARs if `wide`), 0 asks for the size; returns the count with NUL, or
+// 0 with ERROR_INSUFFICIENT_BUFFER.
+uint32_t PutCounted(uint32_t buf, uint32_t cap, const std::string& s, bool wide);
 
 // Makes [va, va+len) readable before host code copies it, the way a DLL's
 // read would on Windows: each uncommitted page raises a guest access

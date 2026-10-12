@@ -1,10 +1,8 @@
 // kernel32: process, memory, heaps, TLS, synchronisation basics, locale and
-// time. Files and kernel objects live in kernel32_file.cpp /
-// kernel32_sync.cpp.
+// time. Files, kernel objects, resources and conversions, and SEH live in
+// kernel32_file.cpp, kernel32_sync.cpp, kernel32_misc.cpp and
+// kernel32_seh.cpp.
 
-#include <unistd.h>
-
-#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -37,19 +35,28 @@ GuestHeap* NewHeap(uint32_t initial, uint32_t max) {
   return raw;
 }
 
-// Writes a NUL-terminated string to a counted guest buffer the Win32 way:
-// returns the length written without NUL, or the required size including
-// NUL if it doesn't fit.
-uint32_t CopyOut(uint32_t buf, uint32_t size, const std::string& s) {
-  if (s.size() + 1 > size) return uint32_t(s.size() + 1);
-  PutStr(buf, s);
-  return uint32_t(s.size());
-}
-
 }  // namespace
 
 uint32_t HeapAllocProcess(uint32_t size, bool zero) {
   return g_process_heap->Alloc(size, zero);
+}
+
+void HeapFreeProcess(uint32_t p) { g_process_heap->Free(p); }
+
+uint32_t TickCount() {
+  using namespace std::chrono;
+  return uint32_t(duration_cast<milliseconds>(steady_clock::now() - g_start).count());
+}
+
+void WriteSystemTime(uint32_t st, const std::tm& t, int ms) {
+  Wr16(st + 0, uint16_t(t.tm_year + 1900));
+  Wr16(st + 2, uint16_t(t.tm_mon + 1));
+  Wr16(st + 4, uint16_t(t.tm_wday));
+  Wr16(st + 6, uint16_t(t.tm_mday));
+  Wr16(st + 8, uint16_t(t.tm_hour));
+  Wr16(st + 10, uint16_t(t.tm_min));
+  Wr16(st + 12, uint16_t(t.tm_sec));
+  Wr16(st + 14, uint16_t(ms));
 }
 
 GuestHeap* FindHeap(uint32_t handle) {
@@ -141,25 +148,19 @@ HLE("kernel32.dll", GetModuleFileNameA, 3) {
   return uint32_t(s.size());
 }
 
-HLE("kernel32.dll", LoadLibraryA, 1) {
-  std::string n = GStr(Arg(c, 0));
+// LoadLibraryA/ExA: only the HLE modules exist.
+uint32_t LoadModule(const char* api, uint32_t name) {
+  std::string n = GStr(name);
   uint32_t h = ModuleHandle(n);
   if (!h) {
-    WarnF("LoadLibraryA(%s): not provided\n", n.c_str());
+    WarnF("%s(%s): not provided\n", api, n.c_str());
     SetLastError(kErrorModNotFound);
   }
   return h;
 }
 
-HLE("kernel32.dll", LoadLibraryExA, 3) {
-  std::string n = GStr(Arg(c, 0));
-  uint32_t h = ModuleHandle(n);
-  if (!h) {
-    WarnF("LoadLibraryExA(%s): not provided\n", n.c_str());
-    SetLastError(kErrorModNotFound);
-  }
-  return h;
-}
+HLE("kernel32.dll", LoadLibraryA, 1) { return LoadModule("LoadLibraryA", Arg(c, 0)); }
+HLE("kernel32.dll", LoadLibraryExA, 3) { return LoadModule("LoadLibraryExA", Arg(c, 0)); }
 
 HLE("kernel32.dll", FreeLibrary, 1) { return 1; }
 
@@ -604,49 +605,24 @@ HLE("kernel32.dll", InterlockedExchange, 2) {
 
 // ---- time ----------------------------------------------------------------
 
-uint64_t NowFileTime() {
-  using namespace std::chrono;
-  auto ns = duration_cast<nanoseconds>(system_clock::now().time_since_epoch())
-                .count();
-  return uint64_t(ns / 100) + 116444736000000000ull;  // 1601 epoch
-}
-
-void WriteSystemTime(uint32_t st, const std::tm& t, int ms) {
-  Wr16(st + 0, uint16_t(t.tm_year + 1900));
-  Wr16(st + 2, uint16_t(t.tm_mon + 1));
-  Wr16(st + 4, uint16_t(t.tm_wday));
-  Wr16(st + 6, uint16_t(t.tm_mday));
-  Wr16(st + 8, uint16_t(t.tm_hour));
-  Wr16(st + 10, uint16_t(t.tm_min));
-  Wr16(st + 12, uint16_t(t.tm_sec));
-  Wr16(st + 14, uint16_t(ms));
-}
-
-HLE("kernel32.dll", GetTickCount, 0) {
-  using namespace std::chrono;
-  return uint32_t(
-      duration_cast<milliseconds>(steady_clock::now() - g_start).count());
-}
+HLE("kernel32.dll", GetTickCount, 0) { return TickCount(); }
 
 HLE("kernel32.dll", QueryPerformanceFrequency, 1) {
-  Wr32(Arg(c, 0), 10000000);
-  Wr32(Arg(c, 0) + 4, 0);
+  Wr64(Arg(c, 0), 10000000);
   return 1;
 }
 
 HLE("kernel32.dll", QueryPerformanceCounter, 1) {
   using namespace std::chrono;
-  uint64_t t = uint64_t(
-      duration_cast<nanoseconds>(steady_clock::now() - g_start).count() / 100);
-  Wr32(Arg(c, 0), uint32_t(t));
-  Wr32(Arg(c, 0) + 4, uint32_t(t >> 32));
+  Wr64(Arg(c, 0), uint64_t(
+      duration_cast<nanoseconds>(steady_clock::now() - g_start).count() / 100));
   return 1;
 }
 
 HLE("kernel32.dll", GetSystemTimeAsFileTime, 1) {
-  uint64_t ft = NowFileTime();
-  Wr32(Arg(c, 0), uint32_t(ft));
-  Wr32(Arg(c, 0) + 4, uint32_t(ft >> 32));
+  using namespace std::chrono;
+  auto ns = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
+  Wr64(Arg(c, 0), uint64_t(ns / 100) + kFileTimeUnixEpoch);
   return 0;
 }
 
@@ -672,11 +648,7 @@ HLE("kernel32.dll", GetLocalTime, 1) {
   return 0;
 }
 
-HLE("winmm.dll", timeGetTime, 0) {
-  using namespace std::chrono;
-  return uint32_t(
-      duration_cast<milliseconds>(steady_clock::now() - g_start).count());
-}
+HLE("winmm.dll", timeGetTime, 0) { return TickCount(); }
 
 HLE("kernel32.dll", Sleep, 1) {
   std::this_thread::sleep_for(std::chrono::milliseconds(Arg(c, 0)));
@@ -825,38 +797,20 @@ std::string LocaleString(uint32_t type) {
   }
 }
 
-HLE("kernel32.dll", GetLocaleInfoA, 4) {
+// GetLocaleInfoA/W(lcid, type, buf, cap).
+uint32_t LocaleInfo(Ctx& c, bool wide) {
   std::string s = LocaleString(Arg(c, 1));
-  uint32_t buf = Arg(c, 2), cap = Arg(c, 3);
   if (s.empty() && (Arg(c, 1) & 0xFFFF) != 0x0050) {
-    WarnF("GetLocaleInfoA(%X, %X): unknown type\n", Arg(c, 0), Arg(c, 1));
+    WarnF("GetLocaleInfo%c(%X, %X): unknown type\n", wide ? 'W' : 'A', Arg(c, 0),
+          Arg(c, 1));
     SetLastError(kErrorInvalidParameter);
     return 0;
   }
-  if (!cap) return uint32_t(s.size() + 1);
-  if (s.size() + 1 > cap) {
-    SetLastError(kErrorInsufficientBuffer);
-    return 0;
-  }
-  PutStr(buf, s);
-  return uint32_t(s.size() + 1);
+  return PutCounted(Arg(c, 2), Arg(c, 3), s, wide);
 }
 
-HLE("kernel32.dll", GetLocaleInfoW, 4) {
-  std::string s = LocaleString(Arg(c, 1));
-  uint32_t buf = Arg(c, 2), cap = Arg(c, 3);
-  if (s.empty() && (Arg(c, 1) & 0xFFFF) != 0x0050) {
-    SetLastError(kErrorInvalidParameter);
-    return 0;
-  }
-  if (!cap) return uint32_t(s.size() + 1);
-  if (s.size() + 1 > cap) {
-    SetLastError(kErrorInsufficientBuffer);
-    return 0;
-  }
-  for (size_t i = 0; i <= s.size(); i++) Wr16(buf + 2 * uint32_t(i), uint8_t(s.c_str()[i]));
-  return uint32_t(s.size() + 1);
-}
+HLE("kernel32.dll", GetLocaleInfoA, 4) { return LocaleInfo(c, false); }
+HLE("kernel32.dll", GetLocaleInfoW, 4) { return LocaleInfo(c, true); }
 
 }  // namespace
 }  // namespace hle

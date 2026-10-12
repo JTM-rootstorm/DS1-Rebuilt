@@ -32,26 +32,31 @@
 
 namespace ds1 {
 
-bool Background();
-
 // SDL_MouseID of DS1_TEST_INPUT "pointer" events: they stand for the host
 // pointer, which automated (background) runs otherwise ignore.
 constexpr SDL_MouseID kTestPointer = 0xD51D51;
 
 namespace {
 
+// DS1_BACKGROUND=1 (used for automated test runs): never move or hide the
+// host pointer and don't take focus when the window appears.
+bool Background() {
+  static const bool bg = [] {
+    const char* e = std::getenv("DS1_BACKGROUND");
+    return e && *e && *e != '0';
+  }();
+  return bg;
+}
+
+
 // ---- messages and styles -----------------------------------------------------
 enum : uint32_t {
-  WM_NULL = 0x0000, WM_CREATE = 0x0001, WM_DESTROY = 0x0002, WM_MOVE = 0x0003,
+  WM_CREATE = 0x0001, WM_DESTROY = 0x0002, WM_MOVE = 0x0003,
   WM_SIZE = 0x0005, WM_ACTIVATE = 0x0006, WM_SETFOCUS = 0x0007,
-  WM_KILLFOCUS = 0x0008, WM_ENABLE = 0x000A, WM_SETTEXT = 0x000C,
-  WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, WM_PAINT = 0x000F,
-  WM_CLOSE = 0x0010, WM_QUIT = 0x0012, WM_ERASEBKGND = 0x0014,
-  WM_SHOWWINDOW = 0x0018, WM_ACTIVATEAPP = 0x001C, WM_SETCURSOR = 0x0020,
-  WM_GETMINMAXINFO = 0x0024, WM_WINDOWPOSCHANGING = 0x0046,
-  WM_WINDOWPOSCHANGED = 0x0047, WM_NCCREATE = 0x0081, WM_NCDESTROY = 0x0082,
-  WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084, WM_NCACTIVATE = 0x0086,
-  WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_CHAR = 0x0102,
+  WM_KILLFOCUS = 0x0008, WM_GETTEXTLENGTH = 0x000E, WM_CLOSE = 0x0010,
+  WM_QUIT = 0x0012, WM_ERASEBKGND = 0x0014, WM_SHOWWINDOW = 0x0018,
+  WM_ACTIVATEAPP = 0x001C, WM_NCCREATE = 0x0081, WM_NCDESTROY = 0x0082,
+  WM_NCHITTEST = 0x0084, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_CHAR = 0x0102,
   WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105, WM_SYSCHAR = 0x0106,
   WM_SYSCOMMAND = 0x0112, WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201,
   WM_LBUTTONUP = 0x0202, WM_LBUTTONDBLCLK = 0x0203, WM_RBUTTONDOWN = 0x0204,
@@ -68,8 +73,7 @@ constexpr int32_t GWL_WNDPROC = -4, GWL_HINSTANCE = -6, GWL_HWNDPARENT = -8,
 
 struct WndClass {
   std::string name;  // lower case
-  uint32_t style = 0, wndproc = 0, cls_extra = 0, wnd_extra = 0, hinst = 0;
-  uint32_t icon = 0, cursor = 0, brush = 0;
+  uint32_t style = 0, wndproc = 0, wnd_extra = 0;
   uint16_t atom = 0;
 };
 
@@ -120,26 +124,22 @@ std::atomic<int32_t> g_recentre_x{0}, g_recentre_y{0};  // screen coordinates
 bool g_sdl_up = false;
 std::thread::id g_main_thread_id = std::this_thread::get_id();
 
-const auto g_t0 = std::chrono::steady_clock::now();
-uint32_t MsgTime() {
-  using namespace std::chrono;
-  return uint32_t(duration_cast<milliseconds>(steady_clock::now() - g_t0).count());
-}
-
 Window* Win(uint32_t hwnd) {
   auto it = g_windows.find(hwnd);
   return it == g_windows.end() || it->second.destroyed ? nullptr : &it->second;
 }
 
+// Frame sizes for a top-level style: border on each side, caption on top.
+void FrameSize(uint32_t style, int* border, int* caption) {
+  bool framed = style & (WS_CAPTION | WS_THICKFRAME);
+  *border = !framed ? 0 : (style & WS_THICKFRAME) ? 4 : 3;
+  *caption = framed && (style & WS_CAPTION) == WS_CAPTION ? 19 : 0;
+}
+
 // Client-area size for a window rect, mirroring what AdjustWindowRect added.
 void ClientSize(const Window& w, int* cw, int* ch) {
-  if (w.style & WS_CHILD || !(w.style & (WS_CAPTION | WS_THICKFRAME))) {
-    *cw = w.w;
-    *ch = w.h;
-    return;
-  }
-  int border = (w.style & WS_THICKFRAME) ? 4 : 3;
-  int caption = (w.style & WS_CAPTION) == WS_CAPTION ? 19 : 0;
+  int border = 0, caption = 0;
+  if (!(w.style & WS_CHILD)) FrameSize(w.style, &border, &caption);
   *cw = std::max(0, w.w - 2 * border);
   *ch = std::max(0, w.h - 2 * border - caption);
 }
@@ -159,7 +159,7 @@ void Post(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp) {
     Window* w = Win(hwnd);
     tid = w ? w->tid : CurrentThread()->tid;
   }
-  PostTo(tid, Msg{hwnd, msg, wp, lp, MsgTime(), g_mouse_x, g_mouse_y});
+  PostTo(tid, Msg{hwnd, msg, wp, lp, TickCount(), g_mouse_x, g_mouse_y});
 }
 
 // Synchronous delivery to the guest WndProc (SendMessage semantics).
@@ -376,7 +376,6 @@ void HandleSdlEvent(const SDL_Event& e) {
       bool was_down = g_key_down[GenericVk(vk)];
       SetKey(vk, down);
       SetKey(GenericVk(vk), down);
-      if (vk == 0x01 || vk == 0x02 || vk == 0x04) break;
       uint8_t gvk = GenericVk(vk);
       bool ext;
       uint8_t sc = ScanCodeForVk(vk, &ext);
@@ -497,7 +496,7 @@ bool TakeMessage(uint32_t hwnd, uint32_t lo, uint32_t hi, bool remove, Msg* out)
       return true;
     }
   if (q.quit) {
-    *out = Msg{0, WM_QUIT, q.quit_code, 0, MsgTime(), g_mouse_x, g_mouse_y};
+    *out = Msg{0, WM_QUIT, q.quit_code, 0, TickCount(), g_mouse_x, g_mouse_y};
     if (remove) q.quit = false;
     return true;
   }
@@ -507,16 +506,6 @@ bool TakeMessage(uint32_t hwnd, uint32_t lo, uint32_t hi, bool remove, Msg* out)
 bool OnMainThread() { return std::this_thread::get_id() == g_main_thread_id; }
 
 }  // namespace
-
-// DS1_BACKGROUND=1 (used for automated test runs): never move or hide the
-// host pointer and don't take focus when the window appears.
-bool Background() {
-  static const bool bg = [] {
-    const char* e = std::getenv("DS1_BACKGROUND");
-    return e && *e && *e != '0';
-  }();
-  return bg;
-}
 
 void EnsureSdlVideo() {
   if (g_sdl_up) return;
@@ -532,6 +521,8 @@ void EnsureSdlVideo() {
     g_display_h = m->h;
   }
 }
+
+namespace {
 
 // Test hook: DS1_TEST_FOCUS="lost,gained" (seconds since the first pump)
 // injects window focus loss and regain, to exercise the game's
@@ -718,6 +709,8 @@ void InjectTestStall() {
   std::this_thread::sleep_for(std::chrono::duration<double>(dur));
 }
 
+}  // namespace
+
 void PumpHostEvents() {
   if (!g_sdl_up || !OnMainThread()) return;
   InjectTestStall();
@@ -767,22 +760,21 @@ using namespace win32;
 
 // ---- classes ---------------------------------------------------------------
 
+// g_classes key of a class name argument: an atom (MAKEINTATOM) or a name.
+std::string ClassKey(uint32_t name) {
+  return name < 0x10000 ? "#" + std::to_string(name) : Lower(GStr(name));
+}
+
 HLE("user32.dll", RegisterClassA, 1) {
   uint32_t wc = Arg(c, 0);
   WndClass k;
   k.style = Rd32(wc + 0);
   k.wndproc = Rd32(wc + 4);
-  k.cls_extra = Rd32(wc + 8);
   k.wnd_extra = Rd32(wc + 12);
-  k.hinst = Rd32(wc + 16);
-  k.icon = Rd32(wc + 20);
-  k.cursor = Rd32(wc + 24);
-  k.brush = Rd32(wc + 28);
-  uint32_t name = Rd32(wc + 36);
-  k.name = name < 0x10000 ? "#" + std::to_string(name) : Lower(GStr(name));
+  k.name = ClassKey(Rd32(wc + 36));
   std::lock_guard<std::recursive_mutex> l(g_mu);
   if (g_classes.count(k.name)) {
-    SetLastError(1410);  // ERROR_CLASS_ALREADY_EXISTS
+    SetLastError(kErrorClassAlreadyExists);
     return 0;
   }
   k.atom = g_next_atom++;
@@ -791,8 +783,7 @@ HLE("user32.dll", RegisterClassA, 1) {
 }
 
 HLE("user32.dll", UnregisterClassA, 2) {
-  uint32_t name = Arg(c, 0);
-  std::string n = name < 0x10000 ? "#" + std::to_string(name) : Lower(GStr(name));
+  std::string n = ClassKey(Arg(c, 0));
   std::lock_guard<std::recursive_mutex> l(g_mu);
   return g_classes.erase(n) ? 1 : 0;
 }
@@ -810,14 +801,14 @@ HLE("user32.dll", CreateWindowExA, 12) {
            hinst = Arg(c, 10), param = Arg(c, 11);
   int32_t x = int32_t(Arg(c, 4)), y = int32_t(Arg(c, 5)), w = int32_t(Arg(c, 6)),
           h = int32_t(Arg(c, 7));
-  std::string cls = cls_va < 0x10000 ? "#" + std::to_string(cls_va) : Lower(GStr(cls_va));
+  std::string cls = ClassKey(cls_va);
   Window win;
   {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     auto it = g_classes.find(cls);
     if (it == g_classes.end()) {
       WarnF("CreateWindowExA: unknown class %s\n", cls.c_str());
-      SetLastError(1407);  // ERROR_CANNOT_FIND_WND_CLASS
+      SetLastError(kErrorCannotFindWndClass);
       return 0;
     }
     win.hwnd = g_next_hwnd;
@@ -860,7 +851,7 @@ HLE("user32.dll", CreateWindowExA, 12) {
   DS1_TRACE("  CreateWindowExA(%s, \"%s\", style %08X, %d,%d %dx%d) -> %X\n",
             cls.c_str(), GStr(title_va).c_str(), style, x, y, w, h, hwnd);
 
-  // CREATESTRUCTA on the guest stack area of the process heap.
+  // CREATESTRUCTA in a process-heap block.
   uint32_t cs = HeapAllocProcess(48, true);
   Wr32(cs + 0, param);
   Wr32(cs + 4, hinst);
@@ -876,7 +867,7 @@ HLE("user32.dll", CreateWindowExA, 12) {
   Wr32(cs + 44, exstyle);
   bool ok = Send(hwnd, WM_NCCREATE, 0, cs) != 0;
   if (ok) ok = int32_t(Send(hwnd, WM_CREATE, 0, cs)) != -1;
-  FindHeap(g_proc->process_heap)->Free(cs);
+  HeapFreeProcess(cs);
   if (!ok) {
     std::lock_guard<std::recursive_mutex> l(g_mu);
     if (Window* wp = Win(hwnd)) {
@@ -1062,15 +1053,13 @@ HLE("user32.dll", MoveWindow, 6) {
 }
 
 HLE("user32.dll", AdjustWindowRect, 3) {
-  uint32_t rc = Arg(c, 0), style = Arg(c, 1);
-  if (style & (WS_CAPTION | WS_THICKFRAME)) {
-    int border = (style & WS_THICKFRAME) ? 4 : 3;
-    int caption = (style & WS_CAPTION) == WS_CAPTION ? 19 : 0;
-    Wr32(rc + 0, Rd32(rc + 0) - border);
-    Wr32(rc + 4, Rd32(rc + 4) - border - caption);
-    Wr32(rc + 8, Rd32(rc + 8) + border);
-    Wr32(rc + 12, Rd32(rc + 12) + border);
-  }
+  uint32_t rc = Arg(c, 0);
+  int border, caption;
+  FrameSize(Arg(c, 1), &border, &caption);
+  Wr32(rc + 0, Rd32(rc + 0) - border);
+  Wr32(rc + 4, Rd32(rc + 4) - border - caption);
+  Wr32(rc + 8, Rd32(rc + 8) + border);
+  Wr32(rc + 12, Rd32(rc + 12) + border);
   return 1;
 }
 
@@ -1312,7 +1301,7 @@ HLE("user32.dll", PostMessageA, 4) {
   uint32_t hwnd = Arg(c, 0);
   if (!hwnd) {
     PostTo(CurrentThread()->tid,
-           Msg{0, Arg(c, 1), Arg(c, 2), Arg(c, 3), MsgTime(), g_mouse_x, g_mouse_y});
+           Msg{0, Arg(c, 1), Arg(c, 2), Arg(c, 3), TickCount(), g_mouse_x, g_mouse_y});
     return 1;
   }
   {
@@ -1381,8 +1370,7 @@ HLE("user32.dll", TranslateAcceleratorA, 3) { return 0; }
 HLE("user32.dll", IsDialogMessageA, 2) { return 0; }
 
 HLE("user32.dll", CallWindowProcA, 5) {
-  Ctx& cx = CurrentThread()->ctx;
-  return CallGuest(cx, Arg(c, 0), {Arg(c, 1), Arg(c, 2), Arg(c, 3), Arg(c, 4)});
+  return CallGuest(c, Arg(c, 0), {Arg(c, 1), Arg(c, 2), Arg(c, 3), Arg(c, 4)});
 }
 
 HLE("user32.dll", DefWindowProcA, 4) {
@@ -1390,9 +1378,8 @@ HLE("user32.dll", DefWindowProcA, 4) {
   switch (msg) {
     case WM_NCCREATE: return 1;
     case WM_CLOSE: {
-      Ctx& cx = CurrentThread()->ctx;
       uint32_t destroy = ProcAddress(ModuleHandle("user32.dll"), "DestroyWindow");
-      CallGuest(cx, destroy, {hwnd});
+      CallGuest(c, destroy, {hwnd});
       return 0;
     }
     case WM_ERASEBKGND: return 1;
@@ -1419,7 +1406,6 @@ HLE("user32.dll", MsgWaitForMultipleObjects, 5) {
            timeout = Arg(c, 3);
   uint32_t wfm = ProcAddress(ModuleHandle("kernel32.dll"), "WaitForMultipleObjects");
   auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
-  Ctx& cx = CurrentThread()->ctx;
   for (;;) {
     PumpHostEvents();
     {
@@ -1428,7 +1414,7 @@ HLE("user32.dll", MsgWaitForMultipleObjects, 5) {
       if (!q.msgs.empty() || q.quit) return n;  // WAIT_OBJECT_0 + n
     }
     if (n) {
-      uint32_t r = CallGuest(cx, wfm, {n, arr, wait_all, 0});
+      uint32_t r = CallGuest(c, wfm, {n, arr, wait_all, 0});
       if (r != 0x102) return r;
     }
     if (timeout != 0xFFFFFFFF && std::chrono::steady_clock::now() >= deadline)
@@ -1442,12 +1428,12 @@ HLE("user32.dll", MsgWaitForMultipleObjects, 5) {
 
 // ---- hooks ---------------------------------------------------------------------------
 // The only hook is WH_KEYBOARD_LL (13), installed to swallow the Windows
-// keys. Our input never produces system hotkeys, so it is recorded and
-// never called.
+// keys. Our input never produces system hotkeys, so the hook gets a handle
+// and is never called.
 
 HLE("user32.dll", SetWindowsHookExA, 4) {
   static uint32_t next = 0x00F00010;
-  DS1_TRACE("  SetWindowsHookExA(type %d, proc %08X): recorded, not called\n",
+  DS1_TRACE("  SetWindowsHookExA(type %d, proc %08X): ignored\n",
             int32_t(Arg(c, 0)), Arg(c, 1));
   return next += 0x10;
 }
@@ -1485,10 +1471,7 @@ bool SyncedCursorPos(int32_t* sx, int32_t* sy) {
   if (!g_pointer_inside) return false;
   // Only while the game is re-centring (otherwise it reads absolute
   // positions and the plain pointer position is right).
-  auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                 std::chrono::steady_clock::now().time_since_epoch())
-                 .count();
-  if (now - g_last_recentre_ms > 250) return false;
+  if (int64_t(TickCount()) - g_last_recentre_ms > 250) return false;
   uint32_t app = 0;
   {
     std::lock_guard<std::recursive_mutex> l(g_mu);
@@ -1511,10 +1494,6 @@ bool SyncedCursorPos(int32_t* sx, int32_t* sy) {
   int32_t dy = int32_t(std::lround((g_real_y - gy) / ky));
   *sx = g_recentre_x + dx;
   *sy = g_recentre_y + dy;
-  static const bool debug = std::getenv("DS1_DEBUG_CURSOR") != nullptr;
-  if (debug)
-    WarnF("cursor: real %d,%d game %d,%d k %.2f,%.2f -> %d,%d\n", int(g_real_x),
-          int(g_real_y), gx, gy, kx, ky, *sx, *sy);
   return true;
 }
 
@@ -1529,9 +1508,7 @@ HLE("user32.dll", GetCursorPos, 1) {
 HLE("user32.dll", SetCursorPos, 2) {
   g_mouse_x = g_recentre_x = int32_t(Arg(c, 0));
   g_mouse_y = g_recentre_y = int32_t(Arg(c, 1));
-  g_last_recentre_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count();
+  g_last_recentre_ms = TickCount();
   return 1;
 }
 

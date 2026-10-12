@@ -8,6 +8,7 @@
 #include <deque>
 #include <vector>
 
+#include "runtime/hle/win32.h"
 #include "runtime/log.h"
 #include "runtime/watchdog.h"
 
@@ -16,12 +17,6 @@ namespace ds1::hle {
 thread_local int t_hle_depth = 0;
 
 namespace {
-
-std::string Lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char ch) { return std::tolower(ch); });
-  return s;
-}
 
 std::map<std::pair<std::string, std::string>, Def>& Registry() {
   static std::map<std::pair<std::string, std::string>, Def> r;
@@ -44,7 +39,6 @@ std::deque<Slot> g_slots;  // stable refs; index = (thunk - kThunkBase) / kThunk
 // Pseudo HMODULEs for DLLs we provide. Real modules are guest pointers to
 // a PE header; nothing in the game dereferences these, so a recognisable
 // value outside the arena's used ranges is enough.
-constexpr uint32_t kModuleBase = kModuleRegion;
 const std::vector<std::string>& KnownDlls() {
   static const std::vector<std::string> dlls = {
       "kernel32.dll", "user32.dll",  "gdi32.dll",    "advapi32.dll",
@@ -55,7 +49,7 @@ const std::vector<std::string>& KnownDlls() {
 }
 
 std::string NormaliseDll(std::string dll) {
-  dll = Lower(dll);
+  dll = win32::Lower(dll);
   size_t slash = dll.find_last_of("\\/");
   if (slash != std::string::npos) dll = dll.substr(slash + 1);
   if (dll.find('.') == std::string::npos) dll += ".dll";
@@ -75,7 +69,7 @@ uint32_t AddSlot(const std::string& dll, const std::string& name) {
 }  // namespace
 
 Registrar::Registrar(const char* dll, const char* name, int nargs, Fn fn) {
-  Registry()[{dll, name}] = Def{dll, name, nargs, fn};
+  Registry()[{dll, name}] = Def{nargs, fn};
 }
 
 void BindImports() {
@@ -148,13 +142,13 @@ uint32_t ModuleHandle(const std::string& dll) {
   const auto& k = KnownDlls();
   auto it = std::find(k.begin(), k.end(), n);
   if (it == k.end()) return 0;
-  return kModuleBase + uint32_t(it - k.begin()) * 0x10000;
+  return kModuleRegion + uint32_t(it - k.begin()) * 0x10000;
 }
 
 uint32_t ProcAddress(uint32_t hmodule, const std::string& name) {
   const auto& k = KnownDlls();
-  uint32_t idx = (hmodule - kModuleBase) / 0x10000;
-  if (hmodule < kModuleBase || idx >= k.size()) return 0;
+  uint32_t idx = (hmodule - kModuleRegion) / 0x10000;
+  if (hmodule < kModuleRegion || idx >= k.size()) return 0;
   const std::string& dll = k[idx];
   if (!Registry().count({dll, name})) {
     WarnF("GetProcAddress(%s, %s): not implemented, returning NULL\n",
@@ -169,5 +163,24 @@ uint32_t ThunkFor(const std::string& dll, const std::string& name) {
 }
 
 void SetLastError(uint32_t e) { Wr32(CurrentThread()->teb + 0x34, e); }
+
+uint32_t CopyOut(uint32_t buf, uint32_t size, const std::string& s) {
+  if (s.size() + 1 > size) return uint32_t(s.size() + 1);
+  PutStr(buf, s);
+  return uint32_t(s.size());
+}
+
+uint32_t PutCounted(uint32_t buf, uint32_t cap, const std::string& s, bool wide) {
+  if (!cap) return uint32_t(s.size() + 1);
+  if (s.size() + 1 > cap) {
+    SetLastError(win32::kErrorInsufficientBuffer);
+    return 0;
+  }
+  if (wide)
+    PutWStr(buf, s);
+  else
+    PutStr(buf, s);
+  return uint32_t(s.size() + 1);
+}
 
 }  // namespace ds1::hle

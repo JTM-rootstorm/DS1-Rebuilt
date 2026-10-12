@@ -3,6 +3,7 @@
 // command line and environment, and guest <-> host path mapping.
 
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,13 +18,23 @@ inline constexpr const char* kGuestGameDir = "C:\\Dungeon Siege";
 
 void InitKernel32State();
 
+// SYSTEMTIME at guest address st from a broken-down time and milliseconds.
+void WriteSystemTime(uint32_t st, const std::tm& t, int ms);
+
 uint32_t HeapAllocProcess(uint32_t size, bool zero);
+void HeapFreeProcess(uint32_t p);
+
+// Milliseconds since the process started: GetTickCount, timeGetTime and
+// message times.
+uint32_t TickCount();
+
+// FILETIME (100 ns units since 1601) of the Unix epoch.
+inline constexpr uint64_t kFileTimeUnixEpoch = 116444736000000000ull;
 GuestHeap* FindHeap(uint32_t handle);
 
 // Kernel object handles. Values are small multiples of 4, as on Windows.
 struct KObject {
-  enum class Type { File, Event, Mutex, Semaphore, Thread, Mapping, Find,
-                    StdIo };
+  enum class Type { File, Event, Mutex, Thread, Mapping, Find, StdIo };
   explicit KObject(Type t) : type(t) {}
   virtual ~KObject() = default;
   Type type;
@@ -46,7 +57,7 @@ std::string GuestCurrentDir();
 struct GuestThreadExit {
   uint32_t code;
 };
-void OnGuestThreadFinished(uint32_t tid, uint32_t code);
+void OnGuestThreadFinished(uint32_t tid);
 
 struct Thread;
 // Runs guest function entry(param) on a new detached host thread bound to

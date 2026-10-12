@@ -230,7 +230,7 @@ Surface::~Surface() {
     if (tex && level == 0) s.gfx->DestroyTexture(tex);
     if (depth) s.gfx->DestroyDepth(depth);
   }
-  if (mem) FindHeap(g_proc->process_heap)->Free(mem);
+  if (mem) HeapFreeProcess(mem);
   if (s.backbuffer == this) s.backbuffer = nullptr;
 }
 
@@ -583,7 +583,7 @@ HLE("ddraw.dll", DirectDrawEnumerateExA, 3) {
   PutStr(strs, "Primary Display Driver");
   PutStr(strs + 32, "display");
   CallGuest(c, cb, {0, strs, strs + 32, ctx, 0});
-  FindHeap(g_proc->process_heap)->Free(strs);
+  HeapFreeProcess(strs);
   return DD_OK;
 }
 
@@ -662,7 +662,7 @@ HLE_NAMED("ddraw.dll", "IDirectDraw7::EnumDisplayModes", DD7_EnumDisplayModes, 5
       if (!CallGuest(c, cb, {d, ctx})) goto done;
     }
 done:
-  FindHeap(g_proc->process_heap)->Free(d);
+  HeapFreeProcess(d);
   return DD_OK;
 }
 

@@ -1,11 +1,8 @@
-// advapi32 (registry, user name), version.dll (version resources) and the
-// small ole32 surface the game uses.
+// advapi32 (registry, user name) and the small ole32 surface the game uses.
 //
 // The registry is an in-memory tree persisted to
 // $XDG_DATA_HOME/ds1/registry.txt. It is seeded with what the retail
 // installer would have written (the GOG install writes nothing).
-
-#include <sys/stat.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -128,27 +125,24 @@ std::string Join(const std::string& base, const std::string& sub) {
   return s.empty() ? base : base + "\\" + s;
 }
 
-constexpr uint32_t kErrSuccess = 0, kErrFileNotFound = 2, kErrInvalidHandle = 6,
-                   kErrMoreData = 234;
-
 HLE("advapi32.dll", RegOpenKeyExA, 5) {
   std::lock_guard<std::mutex> l(g_reg_mu);
   LoadOnce();
   std::string base = RootName(Arg(c, 0));
-  if (base.empty()) return kErrInvalidHandle;
+  if (base.empty()) return kErrorInvalidHandle;
   std::string path = Join(base, GStr(Arg(c, 1)));
-  if (!g_reg.count(path)) return kErrFileNotFound;
+  if (!g_reg.count(path)) return kErrorFileNotFound;
   uint32_t h = g_next_hkey += 4;
   g_open[h] = path;
   Wr32(Arg(c, 4), h);
-  return kErrSuccess;
+  return kErrorSuccess;
 }
 
 HLE("advapi32.dll", RegCreateKeyExA, 9) {
   std::lock_guard<std::mutex> l(g_reg_mu);
   LoadOnce();
   std::string base = RootName(Arg(c, 0));
-  if (base.empty()) return kErrInvalidHandle;
+  if (base.empty()) return kErrorInvalidHandle;
   std::string path = Join(base, GStr(Arg(c, 1)));
   bool existed = g_reg.count(path);
   // Create the key and all its parents.
@@ -159,13 +153,13 @@ HLE("advapi32.dll", RegCreateKeyExA, 9) {
   Wr32(Arg(c, 7), h);
   if (Arg(c, 8)) Wr32(Arg(c, 8), existed ? 2 : 1);  // REG_OPENED / CREATED
   if (!existed) Save();
-  return kErrSuccess;
+  return kErrorSuccess;
 }
 
 HLE("advapi32.dll", RegCloseKey, 1) {
   std::lock_guard<std::mutex> l(g_reg_mu);
   g_open.erase(Arg(c, 0));
-  return kErrSuccess;
+  return kErrorSuccess;
 }
 
 HLE("advapi32.dll", RegQueryValueExA, 6) {
@@ -174,35 +168,35 @@ HLE("advapi32.dll", RegQueryValueExA, 6) {
   std::string key = RootName(Arg(c, 0));
   uint32_t type_out = Arg(c, 3), data = Arg(c, 4), size_ptr = Arg(c, 5);
   auto k = g_reg.find(key);
-  if (k == g_reg.end()) return kErrInvalidHandle;
+  if (k == g_reg.end()) return kErrorInvalidHandle;
   auto v = k->second.find(Lower(GStr(Arg(c, 1))));
   if (v == k->second.end()) {
     DS1_TRACE("  RegQueryValueExA(%s, %s): not found\n", key.c_str(),
               GStr(Arg(c, 1)).c_str());
-    return kErrFileNotFound;
+    return kErrorFileNotFound;
   }
   if (type_out) Wr32(type_out, v->second.type);
   uint32_t n = uint32_t(v->second.data.size());
-  if (!size_ptr) return data ? kErrInvalidHandle : kErrSuccess;
+  if (!size_ptr) return data ? kErrorInvalidHandle : kErrorSuccess;
   uint32_t cap = Rd32(size_ptr);
   Wr32(size_ptr, n);
-  if (!data) return kErrSuccess;
-  if (cap < n) return kErrMoreData;
+  if (!data) return kErrorSuccess;
+  if (cap < n) return kErrorMoreData;
   std::memcpy(GPtr(data), v->second.data.data(), n);
-  return kErrSuccess;
+  return kErrorSuccess;
 }
 
 HLE("advapi32.dll", RegSetValueExA, 6) {
   std::lock_guard<std::mutex> l(g_reg_mu);
   LoadOnce();
   std::string key = RootName(Arg(c, 0));
-  if (!g_reg.count(key)) return kErrInvalidHandle;
+  if (!g_reg.count(key)) return kErrorInvalidHandle;
   RegValue v{Arg(c, 3), {}};
   uint8_t* p = GPtr(Arg(c, 4));
   v.data.assign(p, p + Arg(c, 5));
   g_reg[key][Lower(GStr(Arg(c, 1)))] = v;
   Save();
-  return kErrSuccess;
+  return kErrorSuccess;
 }
 
 HLE("advapi32.dll", GetUserNameA, 2) {
@@ -215,133 +209,6 @@ HLE("advapi32.dll", GetUserNameA, 2) {
   }
   PutStr(buf, n);
   Wr32(psize, uint32_t(n.size() + 1));
-  return 1;
-}
-
-// ---- version.dll ------------------------------------------------------------
-// Only the game's own EXE has version info we can serve; it comes straight
-// from the mapped .rsrc section.
-
-// Finds the first RT_VERSION resource in the mapped image. Returns its
-// guest VA and size.
-bool FindVersionResource(uint32_t* va, uint32_t* size) {
-  const PeImage& img = g_proc->img;
-  uint32_t rsrc = 0;
-  for (const auto& s : img.sections)
-    if (s.name == ".rsrc") rsrc = s.va;
-  if (!rsrc) return false;
-  // Root directory: find type 16 (RT_VERSION), then the first name and
-  // first language entries.
-  uint32_t dir = rsrc;
-  uint32_t want_id = 16;
-  for (int level = 0; level < 3; level++) {
-    uint16_t named = Rd16(dir + 12), ids = Rd16(dir + 14);
-    uint32_t entry = dir + 16;
-    uint32_t found = 0;
-    for (uint32_t i = 0; i < uint32_t(named + ids); i++, entry += 8) {
-      uint32_t id = Rd32(entry), off = Rd32(entry + 4);
-      if (level == 0 && (id & 0x80000000 || id != want_id)) continue;
-      found = off;
-      break;
-    }
-    if (!found) return false;
-    if (found & 0x80000000) {
-      dir = rsrc + (found & 0x7FFFFFFF);
-    } else {
-      uint32_t data_entry = rsrc + found;
-      *va = img.image_base + Rd32(data_entry);
-      *size = Rd32(data_entry + 4);
-      return true;
-    }
-  }
-  return false;
-}
-
-bool IsOwnExe(const std::string& path) {
-  std::string l = Lower(path);
-  return l.size() >= 16 && l.substr(l.size() - 16) == "dungeonsiege.exe";
-}
-
-HLE("version.dll", GetFileVersionInfoSizeA, 2) {
-  uint32_t va, size;
-  if (Arg(c, 1)) Wr32(Arg(c, 1), 0);
-  if (!IsOwnExe(GStr(Arg(c, 0))) || !FindVersionResource(&va, &size)) {
-    SetLastError(kErrorFileNotFound);
-    return 0;
-  }
-  // Room after the resource for ANSI copies handed out by VerQueryValueA.
-  return size * 3;
-}
-
-HLE("version.dll", GetFileVersionInfoA, 4) {
-  uint32_t va, size;
-  uint32_t len = Arg(c, 2), buf = Arg(c, 3);
-  if (!IsOwnExe(GStr(Arg(c, 0))) || !FindVersionResource(&va, &size)) {
-    SetLastError(kErrorFileNotFound);
-    return 0;
-  }
-  std::memcpy(GPtr(buf), GPtr(va), std::min(len, size));
-  // Remember where the scratch area starts (stored after the resource).
-  if (len >= size + 8) Wr32(buf + size, size + 8);
-  return 1;
-}
-
-// Walks a VS_VERSIONINFO block tree (UTF-16 keys) along a backslash path.
-bool VersionLookup(uint32_t block, const std::vector<std::string>& path,
-                   size_t depth, uint32_t* value, uint32_t* vlen, bool* text) {
-  uint16_t length = Rd16(block), value_len = Rd16(block + 2), type = Rd16(block + 4);
-  std::u16string key = GWStr(block + 6);
-  uint32_t p = block + 6 + uint32_t(key.size() + 1) * 2;
-  p = (p + 3) & ~3u;
-  if (depth == path.size()) {
-    *value = p;
-    *vlen = value_len;
-    *text = type == 1;
-    return true;
-  }
-  uint32_t child = (p + (type == 1 ? value_len * 2u : value_len) + 3) & ~3u;
-  uint32_t end = block + length;
-  while (child < end) {
-    uint16_t clen = Rd16(child);
-    if (!clen) break;
-    if (Lower(Narrow(GWStr(child + 6))) == Lower(path[depth]))
-      return VersionLookup(child, path, depth + 1, value, vlen, text);
-    child = (child + clen + 3) & ~3u;
-  }
-  return false;
-}
-
-HLE("version.dll", VerQueryValueA, 4) {
-  uint32_t buf = Arg(c, 0), out_ptr = Arg(c, 2), out_len = Arg(c, 3);
-  std::string sub = GStr(Arg(c, 1));
-  std::vector<std::string> path;
-  std::string cur;
-  for (char ch : sub) {
-    if (ch == '\\') {
-      if (!cur.empty()) path.push_back(cur);
-      cur.clear();
-    } else {
-      cur += ch;
-    }
-  }
-  if (!cur.empty()) path.push_back(cur);
-  uint32_t value, vlen;
-  bool text;
-  if (!VersionLookup(buf, path, 0, &value, &vlen, &text)) return 0;
-  if (text) {
-    // Hand out an ANSI copy from the scratch area after the resource.
-    uint32_t size = Rd16(buf);
-    uint32_t scratch_off = Rd32(buf + size);
-    std::string s = Narrow(GWStr(value));
-    uint32_t dst = buf + scratch_off;
-    PutStr(dst, s);
-    Wr32(buf + size, scratch_off + uint32_t(s.size()) + 1);
-    Wr32(out_ptr, dst);
-    Wr32(out_len, uint32_t(s.size() + 1));
-  } else {
-    Wr32(out_ptr, value);
-    Wr32(out_len, vlen);
-  }
   return 1;
 }
 
@@ -377,7 +244,7 @@ HLE("ole32.dll", StringFromGUID2, 3) {
                 b[6], b[7]);
   size_t n = std::strlen(buf) + 1;
   if (cap < n) return 0;
-  for (size_t i = 0; i < n; i++) Wr16(out + 2 * uint32_t(i), uint8_t(buf[i]));
+  PutWStr(out, buf);
   return uint32_t(n);
 }
 
@@ -387,7 +254,7 @@ HLE("ole32.dll", IIDFromString, 2) {
   if (std::sscanf(s.c_str(), "{%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x}", &d1,
                   &d2, &d3, &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &b[6],
                   &b[7]) != 11)
-    return 0x80070057;  // E_INVALIDARG
+    return kEInvalidArg;
   uint32_t g = Arg(c, 1);
   Wr32(g, d1);
   Wr16(g + 4, uint16_t(d2));

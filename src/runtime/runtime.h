@@ -55,11 +55,14 @@ inline uint8_t* GPtr(uint32_t va) { return g_proc->mem.ptr(va); }
 inline uint32_t Rd32(uint32_t va) { return g_proc->mem.read<uint32_t>(va); }
 inline uint16_t Rd16(uint32_t va) { return g_proc->mem.read<uint16_t>(va); }
 inline void Wr32(uint32_t va, uint32_t v) { g_proc->mem.write<uint32_t>(va, v); }
+inline uint64_t Rd64(uint32_t va) { return g_proc->mem.read<uint64_t>(va); }
+inline void Wr64(uint32_t va, uint64_t v) { g_proc->mem.write<uint64_t>(va, v); }
 inline void Wr16(uint32_t va, uint16_t v) { g_proc->mem.write<uint16_t>(va, v); }
 inline void Wr8(uint32_t va, uint8_t v) { g_proc->mem.write<uint8_t>(va, v); }
 std::string GStr(uint32_t va);                  // NUL-terminated char*
 std::u16string GWStr(uint32_t va);              // NUL-terminated WCHAR*
 void PutStr(uint32_t va, const std::string& s); // writes s + NUL
+void PutWStr(uint32_t va, const std::string& s); // ASCII s as WCHARs + NUL
 
 // Calls guest function `va` with stdcall/cdecl arguments from the host
 // (WndProc, enumeration callbacks, thread start routines). Returns eax.

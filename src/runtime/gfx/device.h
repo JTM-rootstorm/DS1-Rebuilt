@@ -77,6 +77,9 @@ class Device {
   virtual TextureId CreateTexture(int w, int h, int levels, Format fmt,
                                   bool render_target) = 0;
   virtual void DestroyTexture(TextureId t) = 0;
+  // Fills `r` of a render-target texture's top level with an A8R8G8B8
+  // colour (DirectDraw colour-fill Blt; its memory is GPU-only).
+  virtual void FillTexture(TextureId t, const Rect& r, uint32_t argb) = 0;
   // Uploads `r` of mip `level` from linear memory (pitch in bytes).
   virtual void UpdateTexture(TextureId t, int level, const Rect& r,
                              const void* src, uint32_t pitch) = 0;

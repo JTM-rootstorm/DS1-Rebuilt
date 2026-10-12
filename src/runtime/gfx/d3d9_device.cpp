@@ -114,8 +114,10 @@ class D3D9Device final : public Device {
       std::fprintf(stderr, "gfx: d3d9 (dxvk-native) on %s, %dx%d\n",
                    id.Description, w, h);
     } else {
-      // Default-pool resources must go before Reset.
+      // Default-pool resources must go before Reset. Render-target
+      // textures come back empty; the game redraws them every frame.
       for (auto& [id, d] : depths_) d.surf->Release();
+      for (auto& [id, r] : targets_) textures_[id]->Release();
       if (staging_) {
         staging_->Release();
         staging_ = nullptr;
@@ -130,6 +132,10 @@ class D3D9Device final : public Device {
                                               D3DMULTISAMPLE_NONE, 0, FALSE,
                                               &d.surf, nullptr),
               "CreateDepthStencilSurface");
+      for (auto& [id, r] : targets_)
+        Check(dev_->CreateTexture(UINT(r.w), UINT(r.h), UINT(r.levels), D3DUSAGE_RENDERTARGET,
+                                  ToD3D(r.fmt), D3DPOOL_DEFAULT, &textures_[id], nullptr),
+              "CreateTexture(render target)");
     }
     Check(dev_->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &swap_),
           "GetBackBuffer");
@@ -161,6 +167,7 @@ class D3D9Device final : public Device {
     }
     TextureId id = next_id_++;
     textures_[id] = t;
+    if (rt) targets_[id] = {w, h, levels, fmt};
     return id;
   }
 
@@ -169,6 +176,17 @@ class D3D9Device final : public Device {
     if (it == textures_.end()) return;
     it->second->Release();
     textures_.erase(it);
+    targets_.erase(id);
+  }
+
+  void FillTexture(TextureId id, const Rect& r, uint32_t argb) override {
+    auto it = textures_.find(id);
+    if (it == textures_.end()) return;
+    IDirect3DSurface9* s = nullptr;
+    it->second->GetSurfaceLevel(0, &s);
+    RECT rc{r.left, r.top, r.right, r.bottom};
+    dev_->ColorFill(s, &rc, argb);
+    s->Release();
   }
 
   void UpdateTexture(TextureId id, int level, const Rect& r, const void* src,
@@ -528,6 +546,10 @@ class D3D9Device final : public Device {
     int w, h;
     Format fmt;
   };
+  struct Target {
+    int w, h, levels;
+    Format fmt;
+  };
 
   static Format FromD3D(D3DFORMAT f) {
     for (uint32_t i = 0; i <= uint32_t(Format::DXT5); i++)
@@ -569,6 +591,7 @@ class D3D9Device final : public Device {
   IDirect3DTexture9* staging_ = nullptr;
   IDirect3DSurface9* readback_ = nullptr;  // system-memory copy of the RT
   std::map<uint32_t, IDirect3DTexture9*> textures_;
+  std::map<uint32_t, Target> targets_;  // render-target textures (default pool)
   std::map<uint32_t, Depth> depths_;
   uint32_t next_id_ = 1;
   DepthId current_depth_ = 0;

@@ -393,12 +393,16 @@ messages / GetAsyncKeyState), no DirectSound (Miles owns audio).
   reference: https://github.com/WinterSnowfall/d7vk
 - dxvk-native headers ship d3d.h/d3dtypes.h/d3dcaps.h (D3D7 types) but no
   ddraw.h.
-- Open lead (unverified): the game creates two 64x64 textures with
-  DDSCAPS_TEXTURE | DDSCAPS_3DDEVICE (render-to-texture; likely the
-  render-target shadows system_detail.gas enables for a GeForce3), but
-  ddraw.cpp always passes render_target=false to CreateTexture, so they
-  land in the managed pool, which D3D9 cannot bind as a render target.
-  Check whether the game renders into them and what is missing if so.
+- Character shadows (fixed): with complex shadows the game renders each
+  caster's silhouette (grey, TEXTUREFACTOR CFCFCF) into a 64x64
+  DDSCAPS_TEXTURE | DDSCAPS_3DDEVICE texture every frame (SetRenderTarget
+  to it, then back to the back buffer), after a colour-fill Blt to white,
+  and projects it onto the ground. We created those textures in the
+  managed pool, which D3D9 cannot render into, so there were no shadows.
+  They are now D3DUSAGE_RENDERTARGET textures in the default pool
+  (recreated empty on device Reset), and a colour-fill Blt on one is a
+  GPU ColorFill (the old fill went to guest memory and the upload failed,
+  leaving the texture black: ground-wide black shadows).
 
 ## Assets
 Resources/*.dsres and Maps/*.dsmap are Tank archives (~1.1 GB). Engine

@@ -373,7 +373,9 @@ uint32_t CreateSurfaceImpl(uint32_t desc_va, uint32_t* out) {
     uint32_t tcaps = caps | DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM;
     if (caps2 & (DDSCAPS2_TEXTUREMANAGE | DDSCAPS2_D3DTEXTUREMANAGE))
       tcaps &= ~(DDSCAPS_VIDEOMEMORY | DDSCAPS_LOCALVIDMEM);
-    gfx::TextureId tex = Gfx()->CreateTexture(w, h, levels, fmt, false);
+    // DDSCAPS_3DDEVICE: the game renders into it (shadow textures).
+    gfx::TextureId tex =
+        Gfx()->CreateTexture(w, h, levels, fmt, (caps & DDSCAPS_3DDEVICE) != 0);
     if (!tex) return DDERR_OUTOFVIDEOMEMORY;
     std::shared_ptr<Surface> top, prev;
     for (int l = 0; l < levels; l++) {
@@ -498,12 +500,17 @@ uint32_t BltImpl(Surface& dst, const guest::RECT& dr, Surface* src,
     return DD_OK;
   }
   if (fill) {
-    if (dst.kind == Surface::Kind::BackBuffer) {
+    bool target_tex = dst.kind == Surface::Kind::Texture &&
+                      (dst.desc.ddsCaps.dwCaps & DDSCAPS_3DDEVICE);
+    if (dst.kind == Surface::Kind::BackBuffer || target_tex) {
       uint32_t px[1];
       gfx::PutRawPixel(reinterpret_cast<uint8_t*>(px), dst.fmt, fill_raw);
       uint32_t argb = gfx::DecodePixel(reinterpret_cast<uint8_t*>(px), dst.fmt);
       gfx::Rect r{dr.left, dr.top, dr.right, dr.bottom};
-      Gfx()->Clear(1, &r, 1 /* TARGET */, argb, 1.0f, 0);
+      if (target_tex)
+        Gfx()->FillTexture(dst.tex, r, argb);
+      else
+        Gfx()->Clear(1, &r, 1 /* TARGET */, argb, 1.0f, 0);
       return DD_OK;
     }
     if (!dst.mem) return DDERR_UNSUPPORTED;

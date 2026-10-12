@@ -228,6 +228,16 @@ prints the guest address and lifted host backtrace.
   version.dll (real VS_VERSION_INFO), ole32 basics, user32 keyboard/
   metrics/wsprintfA.
 
+## Pinned for after the baseline (improvements over the original)
+
+- Sounds drop out when many play at once (cut off or never start; the
+  threshold varies). The original does the same on real hardware, so it
+  is faithful, not an M4 bug. Likely cause: GPGSound's fixed pools of
+  Miles handles (up to 25 3D samples on the Fast 2D provider, a few dozen
+  2D samples) and its voice stealing when they run out. Revisit once the
+  recompilation is a stable baseline (raise the pools or prioritise
+  better, as an opt-in enhancement).
+
 ## x87 model notes
 - SoftFloat 3e pinned at 5c06db33 (3e + doc fixes, before BF16, which
   only builds for 8086-SSE). `8086` specialization. Gotchas fixed in

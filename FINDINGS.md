@@ -10,14 +10,14 @@ quests (Edgaar's basement, Seek Gyorn), region and basement transitions,
 the first crypt (life shrine, mana fountains, Ruby Gargoyle doors), a
 party member (Ulora), krug shaman resurrections, shops (buying and
 selling; pack mule bought in Stonebridge), party members falling
-unconscious and recovering, saving and loading, Options and Exit; Miles
-audio and Bink movies. Debug and release builds hold the game's own 60 fps
-cap in game. Not yet seen: party death (as opposed to unconsciousness) and
-resurrection, regions past Stonebridge, the ending. Known gaps: the GDI
-"Lucida Console" font texture is blank (dev console / debug text; needs a
-rasteriser), IME functions are not provided (GetProcAddress NULL), the
-game's resolution list stops at 1024x768 (its own filter). Open: shadow
-size (see Graphics), the intermittent issues below.
+unconscious and recovering, party member death and resurrection, saving
+and loading, Options and Exit; Miles audio and Bink movies. Debug and
+release builds hold the game's own 60 fps cap in game. Not yet seen:
+regions past Stonebridge, the ending. Known gaps: the GDI "Lucida Console"
+font texture is blank (dev console / debug text; needs a rasteriser), IME
+functions are not provided (GetProcAddress NULL), the game's resolution
+list stops at 1024x768 (its own filter). Open: shadow size (see Graphics),
+the intermittent issues below.
 
 M3 (main menu renders through the D3D7 HLE on dxvk-native) was reached
 before; notes below.

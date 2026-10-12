@@ -5,6 +5,7 @@
 // else is fatal: there is no interpreter fallback (CLAUDE.md).
 
 #include <execinfo.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <signal.h>
@@ -144,7 +145,6 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
     --t_fault_depth;
     if (cont) return;  // retry the faulting instruction
   }
-  (void)uc;
   int n;
   if (a - base < (1ull << 32))
     n = std::snprintf(buf, sizeof buf,
@@ -155,6 +155,21 @@ void FaultHandler(int sig, siginfo_t* si, void* uc) {
     n = std::snprintf(buf, sizeof buf,
                       "FATAL: %s: host fault at %p (runtime bug)\n",
                       sig == SIGSEGV ? "SIGSEGV" : "SIGBUS", si->si_addr);
+  (void)!write(2, buf, size_t(n));
+  char name[32] = "?";
+  pthread_getname_np(pthread_self(), name, sizeof name);
+#if defined(__linux__) && defined(__x86_64__)
+  // A call through a null pointer leaves pc 0: the caller is at [sp].
+  const greg_t* g = static_cast<ucontext_t*>(uc)->uc_mcontext.gregs;
+  void* caller = *reinterpret_cast<void* const*>(g[REG_RSP]);
+  n = std::snprintf(buf, sizeof buf, "  thread '%s', pc %p, [sp]:\n", name,
+                    reinterpret_cast<void*>(g[REG_RIP]));
+  (void)!write(2, buf, size_t(n));
+  backtrace_symbols_fd(&caller, 1, 2);
+  n = 0;
+#else
+  n = std::snprintf(buf, sizeof buf, "  thread '%s'\n", name);
+#endif
   (void)!write(2, buf, size_t(n));
   void* frames[48];
   int nf = backtrace(frames, 48);

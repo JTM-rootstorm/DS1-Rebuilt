@@ -51,7 +51,13 @@ M4 findings:
   its max distance (loud waterfall, mis-heard panning).
 - Mssfast.m3d's falloff and pan law and Mss32's balance table were read
   from the shipped binaries; the formulas are in audio/mixer.cpp
-  (Mixer::TargetGains).
+  (Mixer::TargetGains). Its asymmetry at +-90 degrees (a source hard
+  left leaves 2/128, -36 dB, on the right channel; hard right leaves
+  nothing on the left) is the original's: Mssfast.m3d builds its pan
+  table (0x22603950) with 127 - floor(acos(x) x 127 x c), and c, the
+  double at 0x2260B938, is just under 1/pi, so acos(-1) gives
+  126.9999965 and pan 1. Miles 6.5 (Call of Duty) pans differently;
+  see its FINDINGS.md.
 - Game audio data: 619 PCM WAVs (22/44 kHz, 16-bit) + 131 raw MP3s in
   Sound.dsres; Mp3dec.asi in system/mss is Miles' MP3 decoder.
 - Callbacks (EOS, stream end, timers) run on a Miles service guest thread

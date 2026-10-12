@@ -1,16 +1,22 @@
 # Findings
 
-## Status (2026-10-11)
-M4 in progress; single player is playable from a new game through the
-farm. Miles audio (3D falloff and panning matched to Mssfast/Mss32) and
-Bink movies work; menus, hero creation, the intro cinematic, the farmer
-conversation, movement, saving and loading, Options and Exit all work.
-Debug and release builds hold the game's own 60 fps cap in game. HLE
-gaps seen in play: none fatal. Known: the GDI "Lucida Console" font
+## Status (2026-10-12)
+M4 in progress; single player is playable from a new game to Stonebridge
+(user playtest, ~1 h of play). Verified in play: menus, hero creation, the
+intro cinematic, movement and combat (frame rate holds with a party at
+the krug camp), inventory, journal, map, spells (zap, fireball), potions,
+hotkeys 1-4, skill level-ups, NPC conversations with voice, multi-stage
+quests (Edgaar's basement, Seek Gyorn), region and basement transitions,
+the first crypt (life shrine, mana fountains, Ruby Gargoyle doors), a
+party member (Ulora), krug shaman resurrections, shops (buying and
+selling; pack mule bought in Stonebridge), saving and loading, Options and Exit; Miles
+audio and Bink movies. Debug and release builds hold the game's own
+60 fps cap in game. Not yet seen: party death and resurrection, regions
+past Stonebridge, the ending. Known gaps: the GDI "Lucida Console" font
 texture is blank (dev console / debug text; needs a rasteriser), IME
 functions are not provided (GetProcAddress NULL), the game's resolution
-list stops at 1024x768 (its own filter). Next: wider playtesting (combat,
-inventory, spells, shops, region loads), crash/hang reports from play.
+list stops at 1024x768 (its own filter). Open: shadow size (see
+Graphics), the intermittent issues below.
 
 M3 (main menu renders through the D3D7 HLE on dxvk-native) was reached
 before; notes below.
@@ -403,6 +409,15 @@ messages / GetAsyncKeyState), no DirectSound (Miles owns audio).
   (recreated empty on device Reset), and a colour-fill Blt on one is a
   GPU ColorFill (the old fill went to guest memory and the upload failed,
   leaving the texture black: ground-wide black shadows).
+- Shadow size (open): shadows look too long in some saves ("Strange
+  Shadows (0-50-27)") but fine in others ("Funny Dead Krug"). The
+  silhouette pass and the ground pass use the same light projection
+  (perspective, focal 6.1, light ~11 m away looking down ~38 deg) and the
+  standard 0.5 scale/bias; the texture matrix is invView * that, as
+  D3D's MultiplyTransform order gives. So we pass the game's own maths
+  through; a low light (time of day?) would explain it. The original
+  will not run under Wine/Proton here for a reference; the user is
+  comparing saves at different times of day.
 
 ## Assets
 Resources/*.dsres and Maps/*.dsmap are Tank archives (~1.1 GB). Engine

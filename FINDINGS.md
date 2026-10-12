@@ -228,6 +228,19 @@ prints the guest address and lifted host backtrace.
   version.dll (real VS_VERSION_INFO), ole32 basics, user32 keyboard/
   metrics/wsprintfA.
 
+## Open intermittent issues
+
+- Pre-placed dead krug shown rotated upright and sunk into the ground
+  (seen once, ~23 min into a session, just past Skartis on the way to the
+  first crypt). Not saved: the same save loads with it lying correctly,
+  it stays correct for 5+ min idle (automated) and across leaving into
+  the crypt and back (user), with x87 runs on or off. So it is runtime
+  placement state (orientation/position), rebuilt on load. Suspects:
+  terrain alignment of the corpse, node-relative placement during
+  streaming, or a race in the loader now that the game takes its
+  multiprocessor paths (we report 2..8 CPUs). Needs a repro; Wine run of
+  the original as a reference if it recurs.
+
 ## Pinned for after the baseline (improvements over the original)
 
 - Sounds drop out when many play at once (cut off or never start; the

@@ -8,11 +8,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # x86recomp: the lifter, x87 model and runtime (a sibling checkout).
 set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp"
     CACHE PATH "x86recomp source tree")
-# dxvk-native (d3d9 only, SDL3 WSI), built from ../tools_ext/dxvk: the
-# Linux graphics backend. macOS uses x86recomp's SDL_GPU (Metal) backend.
-if(APPLE)
-  set(_dxvk_default "")
-else()
+# Graphics go through x86recomp's SDL_GPU backend (Vulkan, Metal on macOS).
+# dxvk-native (d3d9 only, SDL3 WSI), built from ../tools_ext/dxvk, is
+# optional: it adds the d3d9 backend (DS1_GFX=d3d9), the reference image.
+set(_dxvk_default "")
+if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native")
   set(_dxvk_default "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native")
 endif()
 set(DXVK_NATIVE_DIR "${_dxvk_default}" CACHE PATH "dxvk-native install prefix")
@@ -27,8 +27,10 @@ if(TARGET ds1_lifted)
   add_executable(ds1 src/main.cpp $<TARGET_OBJECTS:ds1_lifted>)
   target_link_libraries(ds1 PRIVATE recomp_runtime recomp_mss32 recomp_bink
                         recomp_d3d7 recomp_dbghelp)
-  set_target_properties(ds1 PROPERTIES BUILD_RPATH "${DXVK_NATIVE_DIR}/lib64"
-    ENABLE_EXPORTS ON)  # symbol names in fault backtraces
+  set_target_properties(ds1 PROPERTIES ENABLE_EXPORTS ON)  # symbol names in fault backtraces
+  if(DXVK_NATIVE_DIR)
+    set_target_properties(ds1 PROPERTIES BUILD_RPATH "${DXVK_NATIVE_DIR}/lib64")
+  endif()
 endif()
 
 # Oracle tests over every instruction form in the EXE. Configure with

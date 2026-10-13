@@ -294,7 +294,7 @@ prints the guest address and lifted host backtrace.
   the original as a reference if it recurs.
 
 - Startup crash inside dxvk, about 1 in 70 starts (3 of ~370 automated
-  starts): right after the d3d9 device is created, the main thread calls a
+  starts; only with DS1_GFX=d3d9 since SDL_GPU became the default): right after the d3d9 device is created, the main thread calls a
   null pointer from DxvkImage::updateDebugName() (libdxvk_d3d9.so
   +0x26431c, the vkSetDebugUtilsObjectNameEXT call). Debug utils are not
   enabled (no DXVK_DEBUG, no capture env), so that entry point is never
@@ -447,6 +447,17 @@ messages / GetAsyncKeyState), no DirectSound (Miles owns audio).
   reference: https://github.com/WinterSnowfall/d7vk
 - dxvk-native headers ship d3d.h/d3dtypes.h/d3dcaps.h (D3D7 types) but no
   ddraw.h.
+- SDL_GPU on Vulkan (2026-10-13): x86recomp's SDL_GPU backend is now the
+  default on Linux too (its shaders are GLSL, SPIR-V for Vulkan, MSL via
+  SPIRV-Cross for Metal); dxvk-native is optional, for DS1_GFX=d3d9 as
+  the reference. Against d3d9 on "Strange Shadows (0-50-27)" (menu,
+  load, 70 s in game, a screenshot every 300 frames): in-game frames
+  equal pixel for pixel except on the two characters and their shadow
+  outlines (idle animation phase; mean |d| <= 0.11 of 255); the menu
+  and loading frames differ only by timing (the SDL_GPU run finished
+  loading sooner). The terrain, the HUD and the projected character
+  shadows match. No Khronos validation messages over 90 s. Not yet
+  played by hand on it.
 - Character shadows (fixed): with complex shadows the game renders each
   caster's silhouette (grey, TEXTUREFACTOR CFCFCF) into a 64x64
   DDSCAPS_TEXTURE | DDSCAPS_3DDEVICE texture every frame (SetRenderTarget

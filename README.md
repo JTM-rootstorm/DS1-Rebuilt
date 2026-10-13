@@ -38,8 +38,8 @@ hooks, docs).
   integer fast paths. Tests compare it bit for bit against a real x87.
 - **Runtime and HLE** (x86recomp `src/runtime`): the guest's 4 GiB
   address space, threads, SEH, and every imported Windows/DirectX/Miles/
-  Bink function, implemented on SDL3, dxvk-native (Direct3D 9 on Vulkan)
-  and ffmpeg.
+  Bink function, implemented on SDL3 (graphics on SDL_GPU: Vulkan, or
+  Metal on macOS) and ffmpeg.
 
 x86recomp's ARCHITECTURE.md describes the design in detail;
 [ARCHITECTURE.md](ARCHITECTURE.md) here covers the Dungeon Siege parts.
@@ -53,7 +53,7 @@ x86recomp's ARCHITECTURE.md describes the design in detail;
   headers are needed), CMake 3.25 or newer, Ninja, Python 3.
 - SDL3 and ffmpeg (libavformat, libavcodec, libavutil, libswscale)
   development packages.
-- Meson, to build dxvk-native.
+- glslang (`glslangValidator`), to build the shaders.
 - Ghidra (12.1 used), headless, to find the game's functions.
 
 ## Building
@@ -66,7 +66,10 @@ with an x86recomp checkout at `$REPO/../../x86recomp` (pass
 git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
 ```
 
-1. **dxvk-native** (DXVK v3.1.1, Direct3D 9 only, SDL3 window system):
+1. **dxvk-native** (optional; DXVK v3.1.1, Direct3D 9 only, SDL3
+   window system, built with Meson). It adds the d3d9 backend
+   (`DS1_GFX=d3d9`), used as a reference image while developing the
+   default SDL_GPU backend; skip this step otherwise:
 
    ```sh
    git clone --branch v3.1.1 https://github.com/doitsujin/dxvk.git
@@ -78,15 +81,15 @@ git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
    ninja -C build-native install
    ```
 
-   By default the build looks for the install next to the repository
-   (`../tools_ext/dxvk-native`); pass `-DDXVK_NATIVE_DIR=...` otherwise.
+   The build uses the install next to the repository
+   (`../tools_ext/dxvk-native`) when it is there; pass
+   `-DDXVK_NATIVE_DIR=...` for another place.
 
 2. **Configure and build the lifter**:
 
    ```sh
    cd "$REPO"
-   cmake --preset release -DDXVK_NATIVE_DIR=/path/to/dxvk-native \
-     -DRECOMP_LLVM_ROOT=/usr/lib/llvm/22
+   cmake --preset release -DRECOMP_LLVM_ROOT=/usr/lib/llvm/22
    cmake --build --preset release --target recomp_lift
    ```
 
@@ -127,11 +130,10 @@ git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
    `~/.local/share/ds1`); crash reports and hang dumps go to `crashes/`
    and `hangs/` there.
 
-**macOS** (Apple Silicon): no dxvk-native; graphics go through
-x86recomp's SDL_GPU backend on Metal. With Homebrew
-(`brew install cmake ninja sdl3 ffmpeg llvm@22 ghidra`), steps 2-5 are the
-same with these differences: CMake finds Homebrew's LLVM and leaves
-`DXVK_NATIVE_DIR` empty by default; `pe_symbols.py` needs
+**macOS** (Apple Silicon): no dxvk-native; SDL_GPU runs on Metal. With
+Homebrew (`brew install cmake ninja sdl3 ffmpeg llvm@22 glslang
+spirv-cross ghidra`), steps 2-5 are the same with these differences:
+CMake finds Homebrew's LLVM; `pe_symbols.py` needs
 `/opt/homebrew/opt/llvm@22/bin` on `PATH` (for `llvm-undname`); Ghidra's
 headless script is
 `$(brew --prefix ghidra)/libexec/support/analyzeHeadless`. Settings and

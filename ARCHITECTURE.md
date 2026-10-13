@@ -24,7 +24,8 @@ DungeonSiege.exe ──Ghidra──> functions.tsv, jump tables ─┐
    │        │                                                          │
    │ x86recomp runtime + HLE: kernel32 user32 gdi32 advapi32 ole32     │
    │   mss32 binkw32 ddraw/d3d7 dbghelp ... on SDL3, gfx::Device       │
-   │   (d3d9 via dxvk-native; SDL_GPU Vulkan/Metal later), ffmpeg      │
+   │   (SDL_GPU: Vulkan, Metal; d3d9 via dxvk-native as reference),    │
+   │   ffmpeg                                                          │
    └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,6 +76,7 @@ need their own manifest.
   Main menu renders.
 - M4: Miles audio, Bink, remaining HLE. Single-player playable on Linux.
 - M5: SDL_GPU backend (Vulkan) with the fixed-function generator,
-  matched against the d3d9 backend. Large-address audit and top-down
+  matched against the d3d9 backend (running and the default since
+  2026-10-13; see FINDINGS). Large-address audit and top-down
   stress mode; ~4 GiB guest address space behind a flag.
 - M6: macOS arm64 build: Metal via SDL_GPU, memory-ordering audit.

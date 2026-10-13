@@ -16,9 +16,9 @@ sound, music, voices and movies. The game holds its own 60 fps cap in
 the scenes tested. Work continues; [FINDINGS.md](FINDINGS.md) tracks
 what works, what was fixed and what is known to be missing.
 
-Linux x86-64 only for now. The code is written to be portable (no x86
-intrinsics, no `long double`, no host FPU state); a macOS (arm64, Metal)
-port is planned.
+Linux x86-64, and macOS on Apple Silicon (native Metal, in progress:
+it reaches the game world; see FINDINGS.md). The code is portable (no x86
+intrinsics, no `long double`, no host FPU state).
 
 ## How it works
 
@@ -126,6 +126,16 @@ git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
    Settings and saves live under `$XDG_DATA_HOME/ds1` (by default
    `~/.local/share/ds1`); crash reports and hang dumps go to `crashes/`
    and `hangs/` there.
+
+**macOS** (Apple Silicon): no dxvk-native; graphics go through
+x86recomp's SDL_GPU backend on Metal. With Homebrew
+(`brew install cmake ninja sdl3 ffmpeg llvm@22 ghidra`), steps 2-5 are the
+same with these differences: CMake finds Homebrew's LLVM and leaves
+`DXVK_NATIVE_DIR` empty by default; `pe_symbols.py` needs
+`/opt/homebrew/opt/llvm@22/bin` on `PATH` (for `llvm-undname`); Ghidra's
+headless script is
+`$(brew --prefix ghidra)/libexec/support/analyzeHeadless`. Settings and
+saves live under `~/Library/Application Support/ds1`.
 
 The `debug` preset works the same way (`out/build/debug`); lifted code
 and the x87 model are optimised in both.

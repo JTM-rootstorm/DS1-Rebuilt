@@ -8,9 +8,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # x86recomp: the lifter, x87 model and runtime (a sibling checkout).
 set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp"
     CACHE PATH "x86recomp source tree")
-# dxvk-native (d3d9 only, SDL3 WSI), built from ../tools_ext/dxvk.
-set(DXVK_NATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native"
-    CACHE PATH "dxvk-native install prefix")
+# dxvk-native (d3d9 only, SDL3 WSI), built from ../tools_ext/dxvk: the
+# Linux graphics backend. macOS uses x86recomp's SDL_GPU (Metal) backend.
+if(APPLE)
+  set(_dxvk_default "")
+else()
+  set(_dxvk_default "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native")
+endif()
+set(DXVK_NATIVE_DIR "${_dxvk_default}" CACHE PATH "dxvk-native install prefix")
 
 enable_testing()
 add_subdirectory("${X86RECOMP_DIR}" x86recomp)

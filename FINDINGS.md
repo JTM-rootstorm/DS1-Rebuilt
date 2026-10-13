@@ -1,5 +1,30 @@
 # Findings
 
+## macOS arm64 (2026-10-13, branch macos-metal)
+Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with
+x86recomp's SDL_GPU backend on native Metal (no dxvk). Symbols from a
+fresh Ghidra 12.1.4 auto-analysis lift to the same 31292 functions.
+Verified by scripted runs (DS1_TEST_INPUT, DS1_SHOT_EVERY): logos and the
+Bink intro, main menu, Single Player, hero creation (the skinned, lit
+hero), difficulty, loading, and the farm in game (terrain, animated
+multitexture water, the waterfall, fog, smoke, the HUD, the pause menu),
+with CoreAudio sound. No graphics warnings in the log. Not yet played by
+hand; not yet compared frame by frame against the d3d9 backend.
+
+What the port needed from the game's side:
+- Tank demand paging on 16 KiB host pages: committing one 4 KiB guest
+  page made its whole host page accessible, so the filter (0064AB4C) was
+  never asked for the neighbours and the index read as zeros; ReadFile
+  of Objects.dsres failed its CRC (error 0x17, "Read error! Resource file
+  is either corrupt"). x86recomp now faults in the rest of the host page
+  after the filter continues.
+- "Read error!" with last error 0x17 is the tank index CRC check
+  (FUN_00649eba -> CRC-32 at 0041AEA9 over the index, compared with the
+  value at header+0x50). A copy of Voices.dsres whose index was all
+  zeros (an incomplete copy) failed it on every host; checking
+  zlib.crc32(index) against header+0x50 for each Resources/*.dsres tells
+  a damaged install from a runtime bug.
+
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared
 x86recomp library (../../x86recomp); src/runtime/..., tools/lifter/...

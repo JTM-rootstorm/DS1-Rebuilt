@@ -173,6 +173,23 @@ M4 findings:
     time. It converts 64-bit QPC counts at CW 0x0F7F (PC=64, chop)
     through run::ArithF64, which no fast path covers. Count it with the
     limiter, not as work.
+- x87 runs on host doubles (x86recomp x87-double 79a8931, 2026-10-13):
+  no change here. The doubles apply only under CW 0x027F (PC=53,
+  RC=nearest), and this game runs its float maths at PC=24/RC=chop
+  under D3D.
+  - Measured on the newest save loaded by script (in_load: Single
+    Player, Load Game, Load). Isolated XDG_DATA_HOME copy,
+    SDL_AUDIO_DRIVER=dummy, 60 fps cap. perf on the main thread (user
+    task-clock, 1 ms period, dwarf call graphs) for 30 s from t=70 s.
+    The limiter is every sample with f_0041B794 or f_0041B991 on the
+    stack.
+  - Work: base 7e0dc70 9.53 / 10.01 ms/frame, new 9.61 / 10.25,
+    DS1_X87_DOUBLE=0 9.59. That is within run-to-run noise (+-0.3 ms).
+    Out-of-line x87 helpers stay at 0.8 ms/frame.
+  - The absolute work is higher than in the entry above: that save and
+    setup are not the same. Compare within one entry only.
+  - Lifted code: 160 -> 171 MB.
+  - ctest 9/9 with DS1_GAME_EXE (lift_x87 against the CPU).
   - ctest 9/9 with DS1_GAME_EXE (lift_x87: the EXE's forms and run
     sequences against the CPU).
 - Freeze on a quick focus flip (fixed): with focus-follows-mouse, the

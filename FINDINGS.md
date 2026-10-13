@@ -8,7 +8,7 @@ Verified by scripted runs (DS1_TEST_INPUT, DS1_SHOT_EVERY): logos and the
 Bink intro, main menu, Single Player, hero creation (the skinned, lit
 hero), difficulty, loading, and the farm in game (terrain, animated
 multitexture water, the waterfall, fog, smoke, the HUD, the pause menu),
-with CoreAudio sound. No graphics warnings in the log. Not yet played by
+with CoreAudio sound and voices. No graphics warnings in the log. Not yet played by
 hand; not yet compared frame by frame against the d3d9 backend.
 
 What the port needed from the game's side:

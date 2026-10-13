@@ -156,6 +156,25 @@ M4 findings:
   runs ~26 ms/frame: millions of plain x87 instructions per frame (CPU
   skinning: quaternion rotate 0x5338E9 alone is ~19%) at ~5 ns each.
   ThinLTO of lifted code + ds1_x87 gained nothing measurable.
+- Faster exact x87 (x86recomp x87-fast 7e0dc70, 2026-10-13). Runs now
+  have inline division, zero operands, m64 operands at PC=24, m32/m64
+  loads and rounding stores, and compares. A single instruction is a
+  run, and the tag word became an empty mask (x86recomp
+  ARCHITECTURE.md).
+  - Measured on the newest save loaded by script (party at the farm
+    gate, idle). The game sits at its 60 fps cap there, so the metric
+    is main-thread work per frame outside the limiter, from perf leaf
+    samples, two runs each:
+    - Work: 6.55 -> 5.55 ms/frame (-15%).
+    - Out-of-line x87 helpers: 3.0 -> 1.0 ms/frame.
+    - CompareCC, StoreF64, StoreF32 and LoadConverted are gone from the
+      profile.
+  - The limiter (0x41B794 timer read, 0x41B991 Sleep(0) loop) is idle
+    time. It converts 64-bit QPC counts at CW 0x0F7F (PC=64, chop)
+    through run::ArithF64, which no fast path covers. Count it with the
+    limiter, not as work.
+  - ctest 9/9 with DS1_GAME_EXE (lift_x87: the EXE's forms and run
+    sequences against the CPU).
 - Freeze on a quick focus flip (fixed): with focus-follows-mouse, the
   pointer overshot the window and came back; the main thread hung in a
   back-buffer readback (cursor Blt -> GetRenderTargetData -> dxvk

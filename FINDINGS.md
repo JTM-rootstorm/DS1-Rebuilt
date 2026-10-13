@@ -290,6 +290,14 @@ prints the guest address and lifted host backtrace.
   recompilation is a stable baseline (raise the pools or prioritise
   better, as an opt-in enhancement).
 
+- Uncapped frame rate (planned): the game holds itself at 60 fps. Before
+  lifting the cap: find where it is set and check that simulation, AI,
+  animation and physics use elapsed time, not frames (a fixed step would
+  speed the game up). Then profile a heavy scene: with no cap, x87 cost
+  (~5 ns/instruction, CPU skinning heaviest) and everything else show up
+  directly. Exact speedups first (runs across more code, dropping unread
+  status/tag work); host float/double stays ruled out (CLAUDE.md).
+
 ## x87 model notes
 - SoftFloat 3e pinned at 5c06db33 (3e + doc fixes, before BF16, which
   only builds for 8086-SSE). `8086` specialization. Gotchas fixed in

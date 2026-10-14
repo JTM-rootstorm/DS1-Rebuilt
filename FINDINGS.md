@@ -90,9 +90,24 @@ hand.
   3840x2160 (scale 2.8125, logical 1365x768) the HUD has its 1024x768
   proportions; clicking the menu button opens the in-game menu
   (centred, scaled); hover picking marks the right character. The
-  menus at 800x600 are unchanged. Not done: the software cursor (CPU
-  blend of a 64x64 image, 0x656E02) is still 1:1; labels the game
-  places at projected positions not checked.
+  menus at 800x600 are unchanged. Labels the game places at projected
+  positions not checked.
+- Software cursor at the UI scale (src/ui_scale.cpp). 0x656E02 (main
+  thread before present, and the game's cursor thread between frames)
+  blends a cursor image {+0 width = row stride, +4 height, +0xC ARGB32
+  pixels} at the pointer minus the hotspot. The cursor object (global
+  0x7A0680) holds the image in use (+0x38), the hotspot in use
+  (+0x11C/+0x120) and the request (+0x148 texture, +0x14C/+0x150 hotspot,
+  +0x154 dirty) set by 0x656D49(texture, hx, hy); 0x65754B takes on an
+  image (and sizes the save surfaces). 0x656E02 also re-sets an earlier
+  request it saved (+0x15C/+0x164/+0x16C, copied from the current one)
+  through 0x656D49 (returning to 0x656F15). Now the request's hotspot is
+  scaled (not on that internal call, whose values already are), the
+  image is a bilinear copy scaled alike (premultiplied alpha, cached per
+  image and scale, on the process heap), and a scale change (menus to
+  game) sets the last request again. At 3840x2160 the sword is 2.8x the
+  size, its tip on the pointer (DS1_TEST_FOCUS run; 1x for comparison
+  with DS1_UI_SCALE=1).
 
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared

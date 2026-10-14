@@ -25,6 +25,43 @@ What the port needed from the game's side:
   zlib.crc32(index) against header+0x50 for each Resources/*.dsres tells
   a damaged install from a runtime bug.
 
+## Software cursor on the GPU (2026-10-14, src/cursor.cpp)
+At 5120x2880 (M3 Pro, desktop fullscreen) gameplay at the farm ran at
+60 fps without focus but ~50 (steady 20 ms) with it: with focus the game
+draws its software cursor. 0x656E02(false), on the main thread before
+present, saves the back buffer under the cursor (Blt to a system-memory
+surface), blends the image into a copy on the CPU (0x65780F) and Blts it
+back. The save is a readback, and x86recomp's SDL_GPU device submits a
+frame's draws only at a readback or present, so the main thread waited
+for the frame's whole GPU work (~11.7 ms) after recording it (~8 ms):
+CPU and GPU one after the other.
+- Splitting the render pass earlier in x86recomp was measured and
+  rejected: the GPU starts sooner but loses hidden-surface removal across
+  the split, so the frame's fragment work grows from ~11 to ~16 ms
+  (x86recomp ARCHITECTURE.md, Graphics).
+- Now (cursor.cpp, replacing 0x656E02, its Blt helper 0x6576EA and the
+  blend 0x65780F): on the main-thread path the save is an asynchronous
+  readback (gfx StartReadBack), the copy and the CPU blend are skipped,
+  and the image is blended into the back buffer on the GPU (BlitBlend:
+  source over, straight alpha; the game's d + ((s - d) * a >> 8) differs
+  by at most 2 levels, measured on menu frames). The foreground-window
+  check of 0x6576EA is kept.
+- The game's cursor thread (0x656862) calls 0x656E02(true) every ~30 ms
+  to move the cursor on the primary between frames (and to show the
+  busy cursor, +0x158, after 0.5 s without a main-thread draw). It reads
+  the primary back while holding the gfx device, which also submits the
+  main thread's half-recorded pass: with the mouse moving, frames took
+  7.5 or 31 ms (58 fps). It now runs only when the main thread has not
+  drawn the cursor for 100 ms (loading, stalls), and its first Blt
+  finishes the pending save into the save surface, which it restores
+  from.
+- Measured (scripted farm run, DS1_BACKGROUND=1 DS1_TEST_FOCUS=2,4,
+  no screenshots): 60.0 fps, p99 17.1 ms, with the pointer still or
+  moving every 50 ms; DS1_SOFT_CURSOR=1 (the game's blending, kept for
+  comparison) 50 fps. The asynchronous save matched a synchronous
+  readback byte for byte in every case it was used. Frame dumps: the
+  cursor and the HUD as before.
+
 ## Widescreen (2026-10-14)
 Game patches in src/ (`replace` in lifter.manifest). Not yet played by
 hand.

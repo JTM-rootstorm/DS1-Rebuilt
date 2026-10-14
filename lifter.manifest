@@ -47,3 +47,9 @@ replace 00654160
 replace 0066A28F
 replace 00656D49
 replace 0043CB2E
+
+# Software cursor on the GPU (src/cursor.cpp): the cursor draw, its Blt
+# helper and its blend.
+replace 00656E02
+replace 006576EA
+replace 0065780F

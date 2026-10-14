@@ -108,6 +108,13 @@ hand.
   game) sets the last request again. At 3840x2160 the sword is 2.8x the
   size, its tip on the pointer (DS1_TEST_FOCUS run; 1x for comparison
   with DS1_UI_SCALE=1).
+  The copy is made where 0x656E02 looks up the requested texture's image
+  (0x43CB2E, returning to 0x656F83 to compare it with +0x38 and to
+  0x656FB1 to take it on). Made in 0x65754B at first, the image in use
+  never equalled the looked-up one, so every request reloaded it and set
+  +0x145 (moved): the game requests its cursor every frame, and the
+  cursor thread, catching a request between frames, redrew the cursor on
+  the primary ~17 times a second.
 
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared

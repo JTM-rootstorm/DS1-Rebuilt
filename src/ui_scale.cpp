@@ -23,8 +23,16 @@
 //   0x656D49  set the cursor (texture, hotspot x, y) -> hotspot scaled;
 //             its call from 0x656E02 (0x656F15) restores an earlier
 //             request, already scaled, and is left alone;
-//   0x65754B  take on a cursor image -> a copy scaled by the same factor
-//             (bilinear, premultiplied alpha; kept per image and scale).
+//   0x43CB2E  a texture's image, when 0x656E02 looks up the requested
+//             cursor's (returning to 0x656F83, 0x656FB1) -> a copy scaled
+//             by the same factor (bilinear, premultiplied alpha; kept
+//             per image and scale). 0x656E02 compares it with the image
+//             in use (+0x38) to see whether the request changed it, so
+//             both are the scaled copy: a request for the same cursor
+//             (the game makes one every frame) changes nothing, as at
+//             1x. Scaled when taken on instead, every request reloaded
+//             it and marked the cursor moved, so the cursor thread
+//             redrew it on the primary between frames.
 // When the scale changes (menus to game), the last request is set again.
 // The scale is the screen height over 768 (the HUD at 1024x768), never
 // below 1; DS1_UI_SCALE overrides it.
@@ -82,6 +90,8 @@ constexpr uint32_t kCursor = 0x7A0680;
 // Return address of 0x656E02's own call of 0x656D49.
 constexpr uint32_t kCursorRestoreCall = 0x656F15;
 constexpr uint32_t kCursorSet = 0x656D49;
+// Return addresses of 0x656E02's lookups of the requested cursor's image.
+constexpr uint32_t kCursorImageCheck = 0x656F83, kCursorImageTake = 0x656FB1;
 
 // The last cursor the game asked for (unscaled) and the scale its
 // hotspot and image were given.
@@ -152,7 +162,7 @@ void f_006E0592_lifted(Ctx& c);
 void f_0066A28F_lifted(Ctx& c);
 void f_00654160_lifted(Ctx& c);
 void f_00656D49_lifted(Ctx& c);
-void f_0065754B_lifted(Ctx& c);
+void f_0043CB2E_lifted(Ctx& c);
 
 // UIShell: screen size (thiscall: width, height).
 void f_006DE255(Ctx& c) {
@@ -239,11 +249,12 @@ void f_00656D49(Ctx& c) {
   f_00656D49_lifted(c);
 }
 
-// The cursor takes on an image (thiscall: image).
-void f_0065754B(Ctx& c) {
-  const uint32_t img = Rd32(c.esp + 4);
-  if (img && g_cursor_scale != 1) Wr32(c.esp + 4, ScaledImage(img, g_cursor_scale));
-  f_0065754B_lifted(c);
+// A texture's image (thiscall: texture).
+void f_0043CB2E(Ctx& c) {
+  const uint32_t ret = Rd32(c.esp);
+  f_0043CB2E_lifted(c);
+  if ((ret == kCursorImageCheck || ret == kCursorImageTake) && c.eax && g_cursor_scale != 1)
+    c.eax = ScaledImage(c.eax, g_cursor_scale);
 }
 
 }  // namespace recomp::gen

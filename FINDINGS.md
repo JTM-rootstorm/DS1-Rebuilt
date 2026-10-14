@@ -25,6 +25,55 @@ What the port needed from the game's side:
   zlib.crc32(index) against header+0x50 for each Resources/*.dsres tells
   a damaged install from a runtime bug.
 
+## Widescreen (2026-10-14)
+Game patches in src/ (`replace` in lifter.manifest). Not yet played by
+hand.
+
+- Window (src/window.cpp). In fullscreen (forced in this build) the
+  game creates a WS_POPUP covering the screen rect from 0x43A408
+  (GetSystemMetrics SM_CXSCREEN/SM_CYSCREEN; 0x43A44B is the virtual
+  screen, falling back to it) and keeps that rect in its AppModule
+  (+0xA0..+0xAC): every WM_ACTIVATEAPP (window proc 0x414B38) does
+  MoveWindow to it plus ShowWindow(SW_RESTORE), and WM_GETMINMAXINFO
+  makes its size the maximum and the tracking size. The ini's
+  width/height only size the window in windowed mode (default
+  0x400x0x300). The game asked before x86recomp had the host display
+  up and got the runtime's 1024x768 placeholder, so its window was
+  pinned at 1024x768 whatever the mode. Both rects are now the host
+  desktop (DesktopSize), as on Windows: CreateWindowExA(TOPMOST,
+  WS_POPUP|WS_VISIBLE, 0,0 2560x1440) on a 3840x2160 desktop at 1.5x
+  scale (x86recomp's sizes are points there). With <ID>_FULLSCREEN=window
+  (scripted runs) the host window stays desktop-sized instead of
+  following the mode; not looked into.
+- Resolutions (src/resolutions.cpp). The options menu (0x4B49B7) lists
+  the display modes whose "WxHxBPP" appears in the gas block
+  config:options:video:allowed_res (read with 0x496307 each time the menu
+  opens); the game also checks modes against config/system_detail, one
+  tier per video memory size (8, 12, 16, 32, 64 MB, two detail levels
+  each; record filed by 0x51E28C: +0 memory, +8 detail, +0xC shadow
+  texture size, +0x10 vector of {w, h, max_back_buffers}). Every list
+  stopped at 1024x768. Both now also have the desktop size, 1152x864,
+  1280x960, 1280x1024, 1600x1200 and 1280x720 to 3840x2160 (32 bpp in
+  allowed_res; the system_detail tiers of 32 MB and up, with their
+  largest entry's back buffer count). Checked: the Video tab's list
+  (logged entries) runs 640x480 to 2560x1440 on the scaled 4K desktop.
+  Not yet checked: picking one there and applying it.
+- Hor+ (src/fov.cpp). The camera FOV (SiegeCamera +0x124, 60 degrees,
+  radians) is horizontal: Rapi 0x6539DE builds x scale cot(fov/2), y
+  scale that times the viewport aspect (Hor-). Three functions read it:
+  the camera update 0x66192A (culling frustum 0x6799C1 and projection
+  0x653D06), the drag-selection volume 0x672701 (every frame: the
+  hover pick too) and the screen-to-ray 0x6729D3. Around each the member
+  holds fov' = 2 atan(tan(fov/2) * A * 3/4) for A > 4/3, restored after
+  (saves and scripts see the original). At 1920x1080 the projection
+  went from 1.732 x 3.079 to 1.299 x 2.309 (4:3's vertical); more ground
+  at the sides, nothing culled at the edges. 5:4 and 4:3 unchanged.
+  Click-to-move and drag-select not yet tried by hand.
+- The front end runs at 800x600 (pillarboxed on wide screens, like
+  CoD1's 4:3 menus); the game switches to the configured size in game.
+  The HUD is drawn at 1:1 pixels, anchored to the corners: small at
+  high resolutions (next: UI scale).
+
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared
 x86recomp library (../../x86recomp); src/runtime/..., tools/lifter/...

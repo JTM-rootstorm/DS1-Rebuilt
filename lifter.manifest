@@ -6,6 +6,8 @@
 #   probe <hexva> [name]   call ds1::Probe() on entry (runtime logs it)
 #   resume <hexva>         this call/jmp abandons the current call chain
 #                          (SEH): throw GuestResume to the owning frame
+#   replace <hexva> [name] src/ defines f_<VA>; the lifted body becomes
+#                          f_<VA>_lifted
 #
 # Addresses are guest VAs in hex, no 0x prefix needed.
 
@@ -17,3 +19,19 @@ probe 004023DD WinMain
 name   0040A020 __except_handler3
 name   00409F28 _global_unwind2
 resume 0040A0A3
+
+# Hor+ field of view (src/fov.cpp): the camera update, the drag-selection
+# volume and mouse picking see the widened camera FOV.
+replace 0066192A
+replace 00672701
+replace 006729D3
+
+# The screen rectangles the main window is created with and pinned to
+# (src/window.cpp): the host desktop.
+replace 0043A408
+replace 0043A44B
+
+# Wide resolutions for the options menu (src/resolutions.cpp): the
+# system_detail tiers and config:options:video:allowed_res.
+replace 0051E28C
+replace 00496307

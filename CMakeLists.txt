@@ -24,7 +24,7 @@ add_subdirectory("${X86RECOMP_DIR}" x86recomp)
 # recomp_lift; see CLAUDE.md for the command).
 recomp_add_lifted(ds1_lifted "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 if(TARGET ds1_lifted)
-  add_executable(ds1 src/main.cpp $<TARGET_OBJECTS:ds1_lifted>)
+  add_executable(ds1 src/main.cpp src/fov.cpp src/window.cpp src/resolutions.cpp $<TARGET_OBJECTS:ds1_lifted>)
   target_link_libraries(ds1 PRIVATE recomp_runtime recomp_mss32 recomp_bink
                         recomp_d3d7 recomp_dbghelp)
   set_target_properties(ds1 PROPERTIES ENABLE_EXPORTS ON)  # symbol names in fault backtraces

@@ -190,6 +190,22 @@ M4 findings:
     setup are not the same. Compare within one entry only.
   - Lifted code: 160 -> 171 MB.
   - ctest 9/9 with DS1_GAME_EXE (lift_x87 against the CPU).
+- Fullscreen, display modes, presentation (x86recomp widescreen,
+  2026-10-13). Exclusive mode (SetDisplayMode) now makes the window host
+  fullscreen, borderless at the desktop's resolution, with the 4:3 frame
+  pillarboxed on a wide screen; DS1_FULLSCREEN=window keeps the old
+  mode-sized window (the default for DS1_BACKGROUND runs), =exclusive
+  switches the host mode. The pointer maps back through the shown
+  rectangle (over the bars it is at the screen's edge); relative motion
+  is not scaled. EnumDisplayModes also lists the desktop's size and wide
+  ones; the game still uses 800x600 for the menus and 1024x768 in game.
+  - Scripted runs (in4 input, isolated XDG_DATA_HOME): windowed, desktop
+    fullscreen (the input's pointer positions moved into the 2560x1440
+    window's 1920x1440 picture) and DS1_GFX=d3d9 all reach the farm
+    through the same menus, the scripted clicks landing on the same
+    buttons; the frames match the build before (RMSE 2-3% in game, from
+    animation).
+  - ctest 10/10 with DS1_GAME_EXE (x86recomp's pacing test is new).
   - ctest 9/9 with DS1_GAME_EXE (lift_x87: the EXE's forms and run
     sequences against the CPU).
 - Freeze on a quick focus flip (fixed): with focus-follows-mouse, the

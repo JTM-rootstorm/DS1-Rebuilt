@@ -41,10 +41,12 @@ hand.
   up and got the runtime's 1024x768 placeholder, so its window was
   pinned at 1024x768 whatever the mode. Both rects are now the host
   desktop (DesktopSize), as on Windows: CreateWindowExA(TOPMOST,
-  WS_POPUP|WS_VISIBLE, 0,0 2560x1440) on a 3840x2160 desktop at 1.5x
-  scale (x86recomp's sizes are points there). With <ID>_FULLSCREEN=window
+  WS_POPUP|WS_VISIBLE, 0,0 3840x2160) on a 3840x2160 panel at 1.5x
+  desktop scale (x86recomp 0cadefc: games see pixels, host windows are
+  sized in points; before it, 2560x1440). With <ID>_FULLSCREEN=window
   (scripted runs) the host window stays desktop-sized instead of
-  following the mode; not looked into.
+  following the mode; not looked into. Scripted input positions are host
+  window points: the 800x600 menu is then 1920x1440 points at x 320.
 - Resolutions (src/resolutions.cpp). The options menu (0x4B49B7) lists
   the display modes whose "WxHxBPP" appears in the gas block
   config:options:video:allowed_res (read with 0x496307 each time the menu
@@ -56,7 +58,8 @@ hand.
   1280x960, 1280x1024, 1600x1200 and 1280x720 to 3840x2160 (32 bpp in
   allowed_res; the system_detail tiers of 32 MB and up, with their
   largest entry's back buffer count). Checked: the Video tab's list
-  (logged entries) runs 640x480 to 2560x1440 on the scaled 4K desktop.
+  (logged entries) ran 640x480 to 2560x1440 while the runtime reported
+  the scaled desktop in points; with pixels it should reach 3840x2160.
   Not yet checked: picking one there and applying it.
 - Hor+ (src/fov.cpp). The camera FOV (SiegeCamera +0x124, 60 degrees,
   radians) is horizontal: Rapi 0x6539DE builds x scale cot(fov/2), y
@@ -71,8 +74,25 @@ hand.
   Click-to-move and drag-select not yet tried by hand.
 - The front end runs at 800x600 (pillarboxed on wide screens, like
   CoD1's 4:3 menus); the game switches to the configured size in game.
-  The HUD is drawn at 1:1 pixels, anchored to the corners: small at
-  high resolutions (next: UI scale).
+- UI scale (src/ui_scale.cpp). The UI is laid out in screen pixels:
+  UIShell (0x7A065C; screen size +0x60/+0x64, set by 0x6DE255) places
+  each interface for that size from its intended resolution, windows
+  draw XYZRHW quads (FVF 0x144) through Rapi's DrawPrimitive 0x654160,
+  and the shell update 0x6DFFF7(dt, mouse x, y) hands the pointer to
+  its mouse-move 0x6E108A (hover, tooltips: +0x78/+0x7C). Every 2D draw
+  in game comes from the shell's draws 0x6E02B8, 0x6E046C, 0x6E0592,
+  from the compass 0x66A28F (engine-drawn at viewport width - margin,
+  margin; 0x66A370) or, while loading, the progress text. Now the shell
+  lays out for the screen divided by a scale (height / 768, at least 1;
+  DS1_UI_SCALE overrides), its draws are scaled up by it (in place in
+  0x654160, restored after the draw), the pointer it gets is scaled
+  down, and the compass is scaled about the top right corner. At
+  3840x2160 (scale 2.8125, logical 1365x768) the HUD has its 1024x768
+  proportions; clicking the menu button opens the in-game menu
+  (centred, scaled); hover picking marks the right character. The
+  menus at 800x600 are unchanged. Not done: the software cursor (CPU
+  blend of a 64x64 image, 0x656E02) is still 1:1; labels the game
+  places at projected positions not checked.
 
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared

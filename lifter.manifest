@@ -35,3 +35,13 @@ replace 0043A44B
 # system_detail tiers and config:options:video:allowed_res.
 replace 0051E28C
 replace 00496307
+
+# UI scale (src/ui_scale.cpp): the shell's screen size, update and draws,
+# and Rapi's DrawPrimitive for the scaled 2D quads.
+replace 006DE255
+replace 006DFFF7
+replace 006E02B8
+replace 006E046C
+replace 006E0592
+replace 00654160
+replace 0066A28F

@@ -15,7 +15,9 @@ CLAUDE.md); this repo holds what is specific to Dungeon Siege.
   Maps/, *.dll)
 - dxvk source: ../tools_ext/dxvk (tag v3.1.1, do not edit; patches go in
   a separate branch with a note in FINDINGS.md)
-- dxvk-native install prefix: ../tools_ext/dxvk-native (d3d9 only, SDL3 WSI)
+- dxvk-native install prefix: ../tools_ext/dxvk-native (d3d9 only, SDL3
+  WSI); opt-in: builds include the d3d9 reference backend only when
+  configured with -DDXVK_NATIVE_DIR=../tools_ext/dxvk-native
 - Ghidra project: ds1_recomp.gpr / ds1_recomp.rep (gitignored)
 - Derived symbol data: symbols/ (gitignored, regenerate, see below)
 

@@ -66,10 +66,10 @@ with an x86recomp checkout at `$REPO/../../x86recomp` (pass
 git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
 ```
 
-1. **dxvk-native** (optional; DXVK v3.1.1, Direct3D 9 only, SDL3
-   window system, built with Meson). It adds the d3d9 backend
-   (`DS1_GFX=d3d9`), used as a reference image while developing the
-   default SDL_GPU backend; skip this step otherwise:
+1. **dxvk-native** (optional and off by default; DXVK v3.1.1, Direct3D 9
+   only, SDL3 window system, built with Meson). It adds the d3d9 backend
+   (`DS1_GFX=d3d9`), a reference image for the default SDL_GPU backend;
+   skip this step otherwise:
 
    ```sh
    git clone --branch v3.1.1 https://github.com/doitsujin/dxvk.git
@@ -81,9 +81,9 @@ git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
    ninja -C build-native install
    ```
 
-   The build uses the install next to the repository
-   (`../tools_ext/dxvk-native`) when it is there; pass
-   `-DDXVK_NATIVE_DIR=...` for another place.
+   Then configure with `-DDXVK_NATIVE_DIR="$PWD/../dxvk-native"` (the
+   install prefix) to build the backend; without it the build has
+   SDL_GPU only.
 
 2. **Configure and build the lifter**:
 

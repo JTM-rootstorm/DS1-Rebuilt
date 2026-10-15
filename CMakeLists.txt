@@ -9,13 +9,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp"
     CACHE PATH "x86recomp source tree")
 # Graphics go through x86recomp's SDL_GPU backend (Vulkan, Metal on macOS).
-# dxvk-native (d3d9 only, SDL3 WSI), built from ../tools_ext/dxvk, is
-# optional: it adds the d3d9 backend (DS1_GFX=d3d9), the reference image.
-set(_dxvk_default "")
-if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native")
-  set(_dxvk_default "${CMAKE_CURRENT_SOURCE_DIR}/../tools_ext/dxvk-native")
-endif()
-set(DXVK_NATIVE_DIR "${_dxvk_default}" CACHE PATH "dxvk-native install prefix")
+# dxvk-native (d3d9 only, SDL3 WSI) is opt-in and not built by default:
+# configure with -DDXVK_NATIVE_DIR=<its install prefix> (as the Dungeon
+# Siege project builds it, ../tools_ext/dxvk-native) to add the d3d9
+# reference backend (DS1_GFX=d3d9).
+set(DXVK_NATIVE_DIR "" CACHE PATH "dxvk-native install prefix (opt-in d3d9 backend)")
 
 enable_testing()
 add_subdirectory("${X86RECOMP_DIR}" x86recomp)

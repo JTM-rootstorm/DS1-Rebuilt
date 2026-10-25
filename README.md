@@ -16,9 +16,11 @@ sound, music, voices and movies. The game holds its own 60 fps cap in
 the scenes tested. Work continues; [FINDINGS.md](FINDINGS.md) tracks
 what works, what was fixed and what is known to be missing.
 
-Linux x86-64, and macOS on Apple Silicon (native Metal, in progress:
-it reaches the game world; see FINDINGS.md). The code is portable (no x86
-intrinsics, no `long double`, no host FPU state).
+Linux x86-64, and macOS on Apple Silicon (native Metal): on the Mac it
+builds, passes its tests and plays into the game world in scripted runs
+(the intro, the farm) at a steady 60 fps, also fullscreen on a 5K
+display, but has not yet been played by hand there. The code is portable
+(no x86 intrinsics, no `long double`, no host FPU state).
 
 ## How it works
 
@@ -136,8 +138,10 @@ spirv-cross ghidra`), steps 2-5 are the same with these differences:
 CMake finds Homebrew's LLVM; `pe_symbols.py` needs
 `/opt/homebrew/opt/llvm@22/bin` on `PATH` (for `llvm-undname`); Ghidra's
 headless script is
-`$(brew --prefix ghidra)/libexec/support/analyzeHeadless`. Settings and
-saves live under `~/Library/Application Support/ds1`.
+`$(brew --prefix ghidra)/libexec/support/analyzeHeadless`, run with
+`JAVA_HOME=$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home`
+(`brew install openjdk@21`; without a terminal it cannot ask for the
+JDK). Settings and saves live under `~/Library/Application Support/ds1`.
 
 The `debug` preset works the same way (`out/build/debug`); lifted code
 and the x87 model are optimised in both.

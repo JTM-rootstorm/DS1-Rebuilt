@@ -155,7 +155,7 @@ hand.
 
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared
-SwARc library (../../SwARc); src/runtime/..., tools/lifter/...
+SwARc library (../../SwARc); src/runtime/..., tools/lifter_x86/...
 and tests/... paths in the notes below now refer to that repository.
 Lifted output is unchanged by the move (generated/ identical apart from
 the namespace), all 5 tests pass, and the game boots to the main menu.
@@ -207,7 +207,7 @@ M4 findings:
   formulas are in SwARc's audio/mixer.cpp (Mixer::TargetGains), and
   its asymmetry at +-90 degrees (hard left leaves -36 dB on the right,
   hard right nothing on the left) is the original's (SwARc
-  docs/miles.md, "Miles 6.1c Fast 2D").
+  platforms/win32/docs/miles.md, "Miles 6.1c Fast 2D").
 - Game audio data: 619 PCM WAVs (22/44 kHz, 16-bit) + 131 raw MP3s in
   Sound.dsres; Mp3dec.asi in system/mss is Miles' MP3 decoder.
 - Callbacks (EOS, stream end, timers) run on a Miles service guest thread
@@ -261,7 +261,7 @@ M4 findings:
   goes through SoftFloat. The bigger half of the win was mechanical:
   forced inlining of the arithmetic chain (F80s and result structs went
   through memory between calls: store-forwarding stalls) and no stack
-  protector in ds1_x87. tests/x87_fast_test checks the fast paths against
+  protector in ds1_x87. tests/x86/x87_fast_test checks the fast paths against
   SoftFloat (portable; 2M cases, mutation-checked); x87_test and lift_x87
   still pass against the hardware.
 - Forest past the farm (the user's save, rain, many skinned models):
@@ -357,8 +357,8 @@ M4 findings:
   Blt/Lock read and write the front buffer. Automated runs need
   DS1_TEST_FOCUS to exercise this path (background windows are never
   foreground).
-- Instruction lifting verified: tests/lift_x87_test (111 x87 forms) and
-  tests/lift_int_test (13703 integer forms) run every form in the EXE
+- Instruction lifting verified: tests/x86/lift_x87_test (111 x87 forms) and
+  tests/x86/lift_int_test (13703 integer forms) run every form in the EXE
   lifted and natively from random states, bit-exact (configure with
   -DDS1_GAME_EXE=...).
 - Animated models snapping/flying off (fixed): IDirect3DDevice7::
@@ -372,7 +372,7 @@ M4 findings:
   ") const" vs ")const ", "*const __thiscall" on returned const
   pointers). FuBi parses these strings to register functions for Skrit,
   so jobs (move, conversations) failed silently. Now byte-identical to
-  the game's own dbghelp.dll (tools/undname). Dialogue "conversation_
+  the game's own dbghelp.dll (platforms/win32/tools/undname). Dialogue "conversation_
   norick" plays s_v_fh_norick1 with subtitles; the hero moves.
 - Automated runs: DS1_BACKGROUND ignores the desktop's real input;
   DS1_TEST_INPUT=<file> scripts input (goto/move/pointer/click/key);
@@ -411,12 +411,12 @@ lost,gained injects focus changes. Automated runs use
 SDL_AUDIO_DRIVER=disk SDL_AUDIO_DISK_OUTPUT_FILE=out.raw (F32LE stereo
 44.1 kHz) so nothing plays on the desktop's speakers.
 
-M3 work so far (see src/runtime/hle/{com,ddraw,d3d7,dbghelp}.cpp,
+M3 work so far (see platforms/win32/src/win32/{com,ddraw,d3d7,dbghelp}.cpp,
 src/runtime/gfx/):
 - Guest COM: objects [vtable][magic][id] in guest memory, vtables of named
   HLE thunks ("IDirectDrawSurface7::Blt"), unimplemented methods fatal.
 - ddraw_types.h guest structs verified against the mingw SDK headers by
-  generated static_asserts (tools/layout, run once under wine).
+  generated static_asserts (platforms/win32/tools/layout, run once under wine).
 - gfx::Device interface (D3D7 semantics) + d3d9 backend via dxvk-native.
 - Adapter reported as GeForce3 (10DE/0200, 64 MB): best profile in
   system_detail.gas (trilinear, render-target shadows).

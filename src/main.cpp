@@ -16,7 +16,7 @@
 #include <string>
 
 #include "runtime/log.h"
-#include "runtime/runtime.h"
+#include "win32/process.h"
 
 namespace {
 
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  recomp::GameConfig game;
+  recomp::win32::GameConfig game;
   game.id = "ds1";
   game.guest_dir = "C:\\Dungeon Siege";
   game.exe_name = "DungeonSiege.exe";

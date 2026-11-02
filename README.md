@@ -30,11 +30,11 @@ with other PC game recomps and checked out next to this repository; this reposit
 what is specific to Dungeon Siege (configuration, lifter manifest, game
 hooks, docs).
 
-- **Lifter** (SwARc `tools/lifter`): decodes the EXE with Zydis and
+- **Lifter** (SwARc `tools/lifter_x86`): decodes the EXE with Zydis and
   emits C++ for every function, one basic block at a time, with exact
   x86 integer and flag semantics. Straight-line x87 code becomes guarded
   "runs" that keep the FPU register stack in locals.
-- **x87 model** (SwARc `src/runtime/x87.cpp`): the game depends on
+- **x87 model** (SwARc `src/x86/x87.cpp`): the game depends on
   80-bit x87 behaviour (precision and rounding control, status-word
   flags), so the FPU is modelled exactly on Berkeley SoftFloat with
   integer fast paths. Tests compare it bit for bit against a real x87.
@@ -116,7 +116,7 @@ git clone https://github.com/JTM-rootstorm/SwARc.git "$REPO/../../SwARc"
    also ignored):
 
    ```sh
-   out/build/release/swarc/tools/lifter/recomp_lift \
+   out/build/release/swarc/tools/lifter_x86/recomp_lift \
      --exe "$GAME/DungeonSiege.exe" --symbols symbols --out generated
    cmake --preset release
    cmake --build --preset release

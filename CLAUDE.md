@@ -25,9 +25,9 @@ CLAUDE.md); this repo holds what is specific to Dungeon Siege.
 - `cmake --preset debug && cmake --build --preset debug`
   (release: `--preset release`). Output in out/build/<preset>/.
 - Lifting is a separate step; re-run it after any change to the library's
-  tools/lifter, symbols/, lifter.manifest or the EXE, then re-run cmake
+  tools/lifter_x86, symbols/, lifter.manifest or the EXE, then re-run cmake
   (the generated file list is globbed):
-  `out/build/debug/swarc/tools/lifter/recomp_lift --exe "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
+  `out/build/debug/swarc/tools/lifter_x86/recomp_lift --exe "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
   It only rewrites files whose content changed. generated/lift_report.txt
   lists unimplemented instructions and warnings.
 - Inspect one function's decode + C++: `recomp_lift --exe ... --dump <hexva>`.
@@ -64,5 +64,5 @@ The library's (SwARc/CLAUDE.md): no emulation or Wine in the product,
 - No game assets, memory dumps, extracted tank contents or symbol dumps in
   git. Lifted code is generated and gitignored too.
 - Every import needs an explicit HLE handler (SwARc
-  src/runtime/hle/); an unhandled one is fatal by design.
+  platforms/win32/src/win32/); an unhandled one is fatal by design.
 - Record findings in FINDINGS.md, not here.

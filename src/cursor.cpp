@@ -40,10 +40,10 @@
 #include <cstdlib>
 #include <mutex>
 
-#include "runtime/hle/com.h"
-#include "runtime/hle/ddraw_impl.h"
-#include "runtime/lifted.h"
-#include "runtime/runtime.h"
+#include "win32/com.h"
+#include "win32/ddraw_impl.h"
+#include "x86/lifted.h"
+#include "x86/runtime.h"
 
 namespace recomp::gen {
 

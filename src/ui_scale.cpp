@@ -47,9 +47,9 @@
 #include <tuple>
 #include <vector>
 
-#include "runtime/hle/kernel32_state.h"
-#include "runtime/lifted.h"
-#include "runtime/runtime.h"
+#include "win32/kernel32_state.h"
+#include "x86/lifted.h"
+#include "x86/runtime.h"
 
 namespace recomp::gen {
 

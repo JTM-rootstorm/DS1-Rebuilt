@@ -2,7 +2,7 @@
 
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with
-x86recomp's SDL_GPU backend on native Metal (no dxvk). Symbols from a
+SwARc's SDL_GPU backend on native Metal (no dxvk). Symbols from a
 fresh Ghidra 12.1.4 auto-analysis lift to the same 31292 functions.
 Verified by scripted runs (DS1_TEST_INPUT, DS1_SHOT_EVERY): logos and the
 Bink intro, main menu, Single Player, hero creation (the skinned, lit
@@ -16,7 +16,7 @@ What the port needed from the game's side:
   page made its whole host page accessible, so the filter (0064AB4C) was
   never asked for the neighbours and the index read as zeros; ReadFile
   of Objects.dsres failed its CRC (error 0x17, "Read error! Resource file
-  is either corrupt"). x86recomp now faults in the rest of the host page
+  is either corrupt"). SwARc now faults in the rest of the host page
   after the filter continues.
 - "Read error!" with last error 0x17 is the tank index CRC check
   (FUN_00649eba -> CRC-32 at 0041AEA9 over the index, compared with the
@@ -31,14 +31,14 @@ At 5120x2880 (M3 Pro, desktop fullscreen) gameplay at the farm ran at
 draws its software cursor. 0x656E02(false), on the main thread before
 present, saves the back buffer under the cursor (Blt to a system-memory
 surface), blends the image into a copy on the CPU (0x65780F) and Blts it
-back. The save is a readback, and x86recomp's SDL_GPU device submits a
+back. The save is a readback, and SwARc's SDL_GPU device submits a
 frame's draws only at a readback or present, so the main thread waited
 for the frame's whole GPU work (~11.7 ms) after recording it (~8 ms):
 CPU and GPU one after the other.
-- Splitting the render pass earlier in x86recomp was measured and
+- Splitting the render pass earlier in SwARc was measured and
   rejected: the GPU starts sooner but loses hidden-surface removal across
   the split, so the frame's fragment work grows from ~11 to ~16 ms
-  (x86recomp ARCHITECTURE.md, Graphics).
+  (SwARc ARCHITECTURE.md, Graphics).
 - Now (cursor.cpp, replacing 0x656E02, its Blt helper 0x6576EA and the
   blend 0x65780F): on the main-thread path the save is an asynchronous
   readback (gfx StartReadBack), the copy and the CPU blend are skipped,
@@ -74,12 +74,12 @@ hand.
   MoveWindow to it plus ShowWindow(SW_RESTORE), and WM_GETMINMAXINFO
   makes its size the maximum and the tracking size. The ini's
   width/height only size the window in windowed mode (default
-  0x400x0x300). The game asked before x86recomp had the host display
+  0x400x0x300). The game asked before SwARc had the host display
   up and got the runtime's 1024x768 placeholder, so its window was
   pinned at 1024x768 whatever the mode. Both rects are now the host
   desktop (DesktopSize), as on Windows: CreateWindowExA(TOPMOST,
   WS_POPUP|WS_VISIBLE, 0,0 3840x2160) on a 3840x2160 panel at 1.5x
-  desktop scale (x86recomp 0cadefc: games see pixels, host windows are
+  desktop scale (SwARc 0cadefc: games see pixels, host windows are
   sized in points; before it, 2560x1440). With <ID>_FULLSCREEN=window
   (scripted runs) the host window stays desktop-sized instead of
   following the mode; not looked into. Scripted input positions are host
@@ -155,7 +155,7 @@ hand.
 
 ## Status (2026-10-12)
 Since 2026-10-12 the lifter, x87 model, runtime and HLE are the shared
-x86recomp library (../../x86recomp); src/runtime/..., tools/lifter/...
+SwARc library (../../SwARc); src/runtime/..., tools/lifter/...
 and tests/... paths in the notes below now refer to that repository.
 Lifted output is unchanged by the move (generated/ identical apart from
 the namespace), all 5 tests pass, and the game boots to the main menu.
@@ -190,7 +190,7 @@ M4 findings:
   up to 25 3D samples on "Miles Fast 2D Positional Audio" (picked when
   EAX is off), MP3/WAV streams for music/voice via AIL_open_stream with
   file callbacks into the Tank file system, fade timers.
-- EAX (x86recomp 23adb0b): with EAX on (the audio option, saved as
+- EAX (SwARc 23adb0b): with EAX on (the audio option, saved as
   `eax_enabled` in prefs.gas, or `enable_eax=true` on the command line,
   read in GPGSound init 0x62DBD5) the game opens "Creative Labs EAX (TM)"
   (EAX 1.0), allocates its 3D samples there, sets room types from its
@@ -204,9 +204,9 @@ M4 findings:
   its max distance (loud waterfall, mis-heard panning).
 - The game ships Miles 6.1c. Mssfast.m3d's falloff and pan law and
   Mss32's balance table were read from the shipped binaries; the
-  formulas are in x86recomp's audio/mixer.cpp (Mixer::TargetGains), and
+  formulas are in SwARc's audio/mixer.cpp (Mixer::TargetGains), and
   its asymmetry at +-90 degrees (hard left leaves -36 dB on the right,
-  hard right nothing on the left) is the original's (x86recomp
+  hard right nothing on the left) is the original's (SwARc
   docs/miles.md, "Miles 6.1c Fast 2D").
 - Game audio data: 619 PCM WAVs (22/44 kHz, 16-bit) + 131 raw MP3s in
   Sound.dsres; Mp3dec.asi in system/mss is Miles' MP3 decoder.
@@ -284,10 +284,10 @@ M4 findings:
   runs ~26 ms/frame: millions of plain x87 instructions per frame (CPU
   skinning: quaternion rotate 0x5338E9 alone is ~19%) at ~5 ns each.
   ThinLTO of lifted code + ds1_x87 gained nothing measurable.
-- Faster exact x87 (x86recomp x87-fast 7e0dc70, 2026-10-13). Runs now
+- Faster exact x87 (SwARc x87-fast 7e0dc70, 2026-10-13). Runs now
   have inline division, zero operands, m64 operands at PC=24, m32/m64
   loads and rounding stores, and compares. A single instruction is a
-  run, and the tag word became an empty mask (x86recomp
+  run, and the tag word became an empty mask (SwARc
   ARCHITECTURE.md).
   - Measured on the newest save loaded by script (party at the farm
     gate, idle). The game sits at its 60 fps cap there, so the metric
@@ -301,7 +301,7 @@ M4 findings:
     time. It converts 64-bit QPC counts at CW 0x0F7F (PC=64, chop)
     through run::ArithF64, which no fast path covers. Count it with the
     limiter, not as work.
-- x87 runs on host doubles (x86recomp x87-double 79a8931, 2026-10-13):
+- x87 runs on host doubles (SwARc x87-double 79a8931, 2026-10-13):
   no change here. The doubles apply only under CW 0x027F (PC=53,
   RC=nearest), and this game runs its float maths at PC=24/RC=chop
   under D3D.
@@ -318,7 +318,7 @@ M4 findings:
     setup are not the same. Compare within one entry only.
   - Lifted code: 160 -> 171 MB.
   - ctest 9/9 with DS1_GAME_EXE (lift_x87 against the CPU).
-- Fullscreen, display modes, presentation (x86recomp widescreen,
+- Fullscreen, display modes, presentation (SwARc widescreen,
   2026-10-13). Exclusive mode (SetDisplayMode) now makes the window host
   fullscreen, borderless at the desktop's resolution, with the 4:3 frame
   pillarboxed on a wide screen; DS1_FULLSCREEN=window keeps the old
@@ -333,7 +333,7 @@ M4 findings:
     through the same menus, the scripted clicks landing on the same
     buttons; the frames match the build before (RMSE 2-3% in game, from
     animation).
-  - ctest 10/10 with DS1_GAME_EXE (x86recomp's pacing test is new).
+  - ctest 10/10 with DS1_GAME_EXE (SwARc's pacing test is new).
   - ctest 9/9 with DS1_GAME_EXE (lift_x87: the EXE's forms and run
     sequences against the CPU).
 - Freeze on a quick focus flip (fixed): with focus-follows-mouse, the
@@ -627,7 +627,7 @@ messages / GetAsyncKeyState), no DirectSound (Miles owns audio).
   reference: https://github.com/WinterSnowfall/d7vk
 - dxvk-native headers ship d3d.h/d3dtypes.h/d3dcaps.h (D3D7 types) but no
   ddraw.h.
-- SDL_GPU on Vulkan (2026-10-13): x86recomp's SDL_GPU backend is now the
+- SDL_GPU on Vulkan (2026-10-13): SwARc's SDL_GPU backend is now the
   default on Linux too (its shaders are GLSL, SPIR-V for Vulkan, MSL via
   SPIRV-Cross for Metal); dxvk-native is optional, for DS1_GFX=d3d9 as
   the reference. Against d3d9 on "Strange Shadows (0-50-27)" (menu,

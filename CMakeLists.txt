@@ -4,14 +4,14 @@ project(ds1_recomp LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-# x86recomp's runtime and HLE modules are shared libraries: rebuilding one
+# SwARc's runtime and HLE modules are shared libraries: rebuilding one
 # does not relink the game.
 set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
 
-# x86recomp: the lifter, x87 model and runtime (a sibling checkout).
-set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp"
-    CACHE PATH "x86recomp source tree")
-# Graphics go through x86recomp's SDL_GPU backend (Vulkan, Metal on macOS).
+# SwARc: the lifter, x87 model and runtime (a sibling checkout).
+set(SWARC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../SwARc"
+    CACHE PATH "SwARc source tree")
+# Graphics go through SwARc's SDL_GPU backend (Vulkan, Metal on macOS).
 # dxvk-native (d3d9 only, SDL3 WSI) is opt-in and not built by default:
 # configure with -DDXVK_NATIVE_DIR=<its install prefix> (as the Dungeon
 # Siege project builds it, ../tools_ext/dxvk-native) to add the d3d9
@@ -19,7 +19,7 @@ set(X86RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../x86recomp"
 set(DXVK_NATIVE_DIR "" CACHE PATH "dxvk-native install prefix (opt-in d3d9 backend)")
 
 enable_testing()
-add_subdirectory("${X86RECOMP_DIR}" x86recomp)
+add_subdirectory("${SWARC_DIR}" swarc)
 
 # The game: runtime + HLE + lifted code (generated/, produced by
 # recomp_lift; see CLAUDE.md for the command).

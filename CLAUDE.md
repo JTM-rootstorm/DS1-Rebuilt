@@ -2,13 +2,13 @@
 
 Rules only. Status, findings and next steps go in FINDINGS.md; design in
 ARCHITECTURE.md. The lifter, x87 model, runtime and HLE live in the shared
-x86recomp library (../../x86recomp, its own git repo with its own
+SwARc library (../../SwARc, its own git repo with its own
 CLAUDE.md); this repo holds what is specific to Dungeon Siege.
 
 ## Layout
 - Project: ~/Documents/Programming/Recomp/Dungeon Siege/DS1
-- Library: ~/Documents/Programming/Recomp/x86recomp (added with
-  add_subdirectory; X86RECOMP_DIR overrides the path). Library changes
+- Library: ~/Documents/Programming/Recomp/SwARc (added with
+  add_subdirectory; SWARC_DIR overrides the path). Library changes
   are committed there, and its rules apply to them.
 - Game (GOG, DRM-free; NEVER commit or copy into the repo):
   $HOME/Games/Heroic/Dungeon Siege/  (DungeonSiege.exe, Resources/,
@@ -27,7 +27,7 @@ CLAUDE.md); this repo holds what is specific to Dungeon Siege.
 - Lifting is a separate step; re-run it after any change to the library's
   tools/lifter, symbols/, lifter.manifest or the EXE, then re-run cmake
   (the generated file list is globbed):
-  `out/build/debug/x86recomp/tools/lifter/recomp_lift --exe "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
+  `out/build/debug/swarc/tools/lifter/recomp_lift --exe "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --symbols symbols --out generated`
   It only rewrites files whose content changed. generated/lift_report.txt
   lists unimplemented instructions and warnings.
 - Inspect one function's decode + C++: `recomp_lift --exe ... --dump <hexva>`.
@@ -40,7 +40,7 @@ CLAUDE.md); this repo holds what is specific to Dungeon Siege.
   `ninja -C ../tools_ext/dxvk/build-native install`
 
 ## Product constraints
-The library's (x86recomp/CLAUDE.md): no emulation or Wine in the product,
+The library's (SwARc/CLAUDE.md): no emulation or Wine in the product,
 64-bit host only, portable to macOS arm64 + Metal, exact x87.
 
 ## Rules
@@ -48,21 +48,21 @@ The library's (x86recomp/CLAUDE.md): no emulation or Wine in the product,
   commands, scripts and CMake.
 - Guest addresses must stay below 0x80000000 (the EXE is not
   large-address-aware and may compare pointers as signed) until the
-  large-address audit in x86recomp's ARCHITECTURE.md is done for DS1;
+  large-address audit in SwARc's ARCHITECTURE.md is done for DS1;
   even then only behind its config flag.
 - Dungeon Siege knowledge (paths, registry, AppModule offsets, game
-  patches) goes in src/ here (GameConfig, hooks), never in x86recomp.
+  patches) goes in src/ here (GameConfig, hooks), never in SwARc.
 - Commits: GPG-signed (global config), no Claude co-author trailers or
   generated-by markers.
 - Python scripts that read game files run with `python3 -I`.
 - /usr/share/ghidra/support/analyzeHeadless has no exec bit: run it as
   `bash /usr/share/ghidra/support/analyzeHeadless ...`.
 - Regenerate symbols after any Ghidra change that matters:
-  `python3 -I ../../x86recomp/tools/pe_symbols.py "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --out symbols`
+  `python3 -I ../../SwARc/tools/pe_symbols.py "$HOME/Games/Heroic/Dungeon Siege/DungeonSiege.exe" --out symbols`
   and the headless ExportFunctions.java run (command in its header,
-  ../../x86recomp/tools/ghidra).
+  ../../SwARc/tools/ghidra).
 - No game assets, memory dumps, extracted tank contents or symbol dumps in
   git. Lifted code is generated and gitignored too.
-- Every import needs an explicit HLE handler (x86recomp
+- Every import needs an explicit HLE handler (SwARc
   src/runtime/hle/); an unhandled one is fatal by design.
 - Record findings in FINDINGS.md, not here.

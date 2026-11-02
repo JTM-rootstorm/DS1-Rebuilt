@@ -25,25 +25,25 @@ display, but has not yet been played by hand there. The code is portable
 ## How it works
 
 The machinery lives in
-[x86recomp](https://github.com/JTM-rootstorm/x86recomp), a library shared
+[SwARc](https://github.com/JTM-rootstorm/SwARc), a library shared
 with other PC game recomps and checked out next to this repository; this repository holds
 what is specific to Dungeon Siege (configuration, lifter manifest, game
 hooks, docs).
 
-- **Lifter** (x86recomp `tools/lifter`): decodes the EXE with Zydis and
+- **Lifter** (SwARc `tools/lifter`): decodes the EXE with Zydis and
   emits C++ for every function, one basic block at a time, with exact
   x86 integer and flag semantics. Straight-line x87 code becomes guarded
   "runs" that keep the FPU register stack in locals.
-- **x87 model** (x86recomp `src/runtime/x87.cpp`): the game depends on
+- **x87 model** (SwARc `src/runtime/x87.cpp`): the game depends on
   80-bit x87 behaviour (precision and rounding control, status-word
   flags), so the FPU is modelled exactly on Berkeley SoftFloat with
   integer fast paths. Tests compare it bit for bit against a real x87.
-- **Runtime and HLE** (x86recomp `src/runtime`): the guest's 4 GiB
+- **Runtime and HLE** (SwARc `src/runtime`): the guest's 4 GiB
   address space, threads, SEH, and every imported Windows/DirectX/Miles/
   Bink function, implemented on SDL3 (graphics on SDL_GPU: Vulkan, or
   Metal on macOS) and ffmpeg.
 
-x86recomp's ARCHITECTURE.md describes the design in detail;
+SwARc's ARCHITECTURE.md describes the design in detail;
 [ARCHITECTURE.md](ARCHITECTURE.md) here covers the Dungeon Siege parts.
 
 ## What you need
@@ -61,11 +61,11 @@ x86recomp's ARCHITECTURE.md describes the design in detail;
 ## Building
 
 Paths below assume the game is in `$GAME` and this repository in `$REPO`,
-with an x86recomp checkout at `$REPO/../../x86recomp` (pass
-`-DX86RECOMP_DIR=...` to cmake otherwise):
+with an SwARc checkout at `$REPO/../../SwARc` (pass
+`-DSWARC_DIR=...` to cmake otherwise):
 
 ```sh
-git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
+git clone https://github.com/JTM-rootstorm/SwARc.git "$REPO/../../SwARc"
 ```
 
 1. **dxvk-native** (optional and off by default; DXVK v3.1.1, Direct3D 9
@@ -99,11 +99,11 @@ git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
    is ignored by git):
 
    ```sh
-   X86RECOMP="$REPO/../../x86recomp"
-   python3 -I "$X86RECOMP/tools/pe_symbols.py" "$GAME/DungeonSiege.exe" --out symbols
+   SWARC="$REPO/../../SwARc"
+   python3 -I "$SWARC/tools/pe_symbols.py" "$GAME/DungeonSiege.exe" --out symbols
    mkdir -p /tmp/ds1_ghidra
    bash /usr/share/ghidra/support/analyzeHeadless /tmp/ds1_ghidra ds1 \
-     -import "$GAME/DungeonSiege.exe" -scriptPath "$X86RECOMP/tools/ghidra" \
+     -import "$GAME/DungeonSiege.exe" -scriptPath "$SWARC/tools/ghidra" \
      -postScript ExportFunctions.java symbols/functions.tsv \
      -postScript ExportJumpTables.java symbols/jumptables.tsv
    ```
@@ -116,7 +116,7 @@ git clone https://github.com/JTM-rootstorm/x86recomp.git "$REPO/../../x86recomp"
    also ignored):
 
    ```sh
-   out/build/release/x86recomp/tools/lifter/recomp_lift \
+   out/build/release/swarc/tools/lifter/recomp_lift \
      --exe "$GAME/DungeonSiege.exe" --symbols symbols --out generated
    cmake --preset release
    cmake --build --preset release

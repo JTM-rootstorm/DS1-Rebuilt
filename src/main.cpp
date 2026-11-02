@@ -24,7 +24,7 @@ namespace {
 // cursor is the pointer position. Fullscreen (the only mode this build
 // allows: the `fullscreen` setting's store is NOPed out at 0x41653A) it
 // re-centres the pointer every frame and moves its own cursor by the
-// scaled delta (see SyncedCursorPos in x86recomp's user32_window.cpp).
+// scaled delta (see SyncedCursorPos in SwARc's user32_window.cpp).
 // The update that moves the game's cursor first re-centres (ref = centre,
 // SetCursorPos(centre)) and then reads; other reads only peek into locals.
 // The fields are in the game's AppModule, which it keeps in the window's

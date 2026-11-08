@@ -1,7 +1,15 @@
 # Findings
 
-## CRT (2026-11-07, branch native-crt, src/crt.cpp)
+## CRT (2026-11-07, branch native-crt; shared since 2026-11-08)
 First step from lifted to native source: the statically linked VC6 CRT.
+- Where it lives (2026-11-08): the native functions are SwARc's
+  (recomp_msvc_crt, platforms/win32/docs/msvc_crt.md), shared by every
+  game that links an MSVC CRT statically; lifter.manifest binds the EXE's
+  copies with `native <va> msvc_crt::<name>` (the locale ones
+  msvc_crt::vc6::<name>, their globals in src/crt_locale.h). The oracle
+  is SwARc's too (ctest msvc_crt_oracle, with DS1_GAME_EXE; the game's
+  stubs in tests/crt_stubs.cpp and tests/crt_stubs.manifest). What
+  follows was found and measured while they were src/crt.cpp here.
 - Identification: byte signatures of VC6's static runtime libraries name
   802 functions (CRT, C++ EH runtime, a few Dinkumware STL helpers),
   each checked here against the disassembly. The CRT sits in
@@ -15,7 +23,7 @@ First step from lifted to native source: the statically linked VC6 CRT.
   repne scasb), so the out-of-line functions have few call sites. The
   most called: atexit (11208, static initialisers), std::_Lockit (601),
   _ftol (331), wcslen (187), _strcmpi (169), floor (103), memcpy (83).
-- Native now (28, manifest `replace`): memset, memcpy, memmove, memchr,
+- Native now (28): memset, memcpy, memmove, memchr,
   strlen, strcpy, strcat, strncpy, strncat, strcmp, strncmp, strchr,
   strrchr, strstr, strcspn, strpbrk, wcslen, wcscpy, wcsncpy, wcschr,
   wcsrchr, wcscspn, _allmul, _aulldiv, _aullrem, _allshl, _alloca_probe,
@@ -25,7 +33,7 @@ First step from lifted to native source: the statically linked VC6 CRT.
   raises it. A fault on an uncommitted guest page from the native code
   goes to the game's filters as from lifted code (dispatch.cpp's handler
   takes faults in guest memory from any non-HLE host code).
-- Oracle: tests/crt_test.cpp (ctest crt_oracle, with DS1_GAME_EXE) runs
+- Oracle (ctest crt_oracle then, msvc_crt_oracle now) runs
   each original, lifted with --only, and the native function from the same
   memory and registers on random arguments, every alignment, bytes and
   units above 0x7F, overlapping memcpy/memmove, 64-bit values at the
@@ -82,10 +90,31 @@ First step from lifted to native source: the statically linked VC6 CRT.
 - Left for later in this group: _wcsicmp/_wcsnicmp (16 + 4 calls). Their
   towlower (0x634456) returns 16 bits in AX over whatever EAX held, and
   they store whole registers into their argument slots.
-- Next: atoi/atol/strtol, floor/ceil/_CIpow/_CIfmod on the x87 model, the
-  sprintf/sscanf family (float formatting through _cfltcvt), then the
-  STL (std::_Lockit, and the template instantiations in game code, which
-  signatures cannot name).
+- Native too (2026-11-08, SwARc msvc_crt::vc6): atoi 0x4118DC (21 calls;
+  it calls atol), atol 0x411851 (3), strtol 0x40D465 (1; strtoxl
+  0x40D47C), floor 0x6323E1 (103), ceil 0x631CB5 (14).
+  - atol/strtol classify with _pctype (or _isctype when __mb_cur_max >
+    1, same answer for a byte), so code page "digits" count. strtol hands
+    overflow (errno through _errno 0x40E228, TLS) and table letters over
+    0x7F (signed char to toupper) to the original.
+  - floor/ceil switch to the control words at 0x791E00 (0x173F) and
+    0x791DF0 (0x1B3F) with _ctrlfp 0x634CF6, frndint in _frnd 0x634B83,
+    then compare with the argument; the natives take the same steps on
+    the x87 model. EAX is _ctrlfp's return, 0x177F/0x1B7F (fnstcw reads
+    bit 6 set). NaN/Inf go through _sptype 0x634BBE to _except1 0x63451F
+    or _handle_qnan1 0x6344CB; an unmasked exception reaches
+    RaiseException (0x6347CC); those go to the original.
+  - msvc_crt_oracle (with _errno stubbed): 8119148 calls, 0 mismatches,
+    the number parsers in all three locale states, floor/ceil on every
+    class of argument, PC/RC and stack depth. Mutations caught: atol's
+    sign, strtol's end pointer, digit range, 0x prefix and overflow
+    hand-over, floor's compare and precision control.
+  - Run: the scripted new game (out/runs/newgame_1080.txt plus Escape)
+    reaches the farm; the log as before (but for Bink closing the intro a
+    frame earlier); ctest 22/22.
+- Next: _CIpow/_CIfmod (9 + 5 calls), the sprintf/sscanf family (float
+  formatting through _cfltcvt), then the STL (std::_Lockit, and the
+  template instantiations in game code, which signatures cannot name).
 
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with

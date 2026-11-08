@@ -1,6 +1,7 @@
-# Added to lifter.manifest for crt_oracle_test: the game's allocator, which
-# _strlwr and _strupr use for their buffer, and the CRT's _lock, stubbed in
-# tests/crt_test.cpp.
+# Added to lifter.manifest for msvc_crt_oracle_test: the game's allocator,
+# which _strlwr and _strupr use for their buffer, the CRT's _lock, and
+# _errno (strtol's overflow), stubbed in tests/crt_stubs.cpp.
 replace 00403BB0 malloc
 replace 00403BA0 free
 replace 0040B408 _lock
+replace 0040E228 _errno

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <string>
 
+#include "crt_locale.h"
 #include "runtime/log.h"
 #include "win32/process.h"
 
@@ -95,5 +96,6 @@ int main(int argc, char** argv) {
   game.registry = {{key, "EXE Path", game.guest_dir},
                    {key, "InstallationDirectory", game.guest_dir}};
   game.game_cursor = GameCursor;
+  recomp::native::msvc_crt::vc6::SetLocale(kCrtLocale);
   return recomp::RunProcess(game, exe, game_dir, game_args);
 }

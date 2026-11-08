@@ -8,6 +8,8 @@
 #                          (SEH): throw GuestResume to the owning frame
 #   replace <hexva> [name] src/ defines f_<VA>; the lifted body becomes
 #                          f_<VA>_lifted
+#   native <hexva> <name>  a shared native function of SwARc's
+#                          (recomp::native::<name>) replaces it
 #
 # Addresses are guest VAs in hex, no 0x prefix needed.
 
@@ -58,47 +60,55 @@ replace 00656E02
 replace 006576EA
 replace 0065780F
 
-# The VC6 CRT's string, memory and integer helpers (src/crt.cpp).
-replace 0040C8D0 memset
-replace 0040C930 memcpy
-replace 0040D130 memmove
-replace 00631C10 memchr
-replace 0040CC70 strlen
-replace 0040C7E0 strcpy
-replace 0040C7F0 strcat
-replace 0040DA70 strncpy
-replace 00632090 strncat
-replace 00410580 strcmp
-replace 0040D7E0 strncmp
-replace 0040D6A0 strchr
-replace 00631BE0 strrchr
-replace 0040D760 strstr
-replace 00410610 strcspn
-replace 00410650 strpbrk
-replace 00409DAE wcslen
-replace 00632024 wcscpy
-replace 0071EB34 wcsncpy
-replace 00631E9E wcschr
-replace 00632049 wcsrchr
-replace 00631D84 wcscspn
-replace 00411C30 _allmul
-replace 0040E0D0 _aulldiv
-replace 0040E140 _aullrem
-replace 00637090 _allshl
-replace 0040D820 _alloca_probe
-replace 00631810 _ftol
+# The VC6 CRT's string, memory and integer helpers (SwARc's msvc_crt).
+native 0040C8D0 msvc_crt::memset
+native 0040C930 msvc_crt::memcpy
+native 0040D130 msvc_crt::memmove
+native 00631C10 msvc_crt::memchr
+native 0040CC70 msvc_crt::strlen
+native 0040C7E0 msvc_crt::strcpy
+native 0040C7F0 msvc_crt::strcat
+native 0040DA70 msvc_crt::strncpy
+native 00632090 msvc_crt::strncat
+native 00410580 msvc_crt::strcmp
+native 0040D7E0 msvc_crt::strncmp
+native 0040D6A0 msvc_crt::strchr
+native 00631BE0 msvc_crt::strrchr
+native 0040D760 msvc_crt::strstr
+native 00410610 msvc_crt::strcspn
+native 00410650 msvc_crt::strpbrk
+native 00409DAE msvc_crt::wcslen
+native 00632024 msvc_crt::wcscpy
+native 0071EB34 msvc_crt::wcsncpy
+native 00631E9E msvc_crt::wcschr
+native 00632049 msvc_crt::wcsrchr
+native 00631D84 msvc_crt::wcscspn
+native 00411C30 msvc_crt::_allmul
+native 0040E0D0 msvc_crt::_aulldiv
+native 0040E140 msvc_crt::_aullrem
+native 00637090 msvc_crt::_allshl
+native 0040D820 msvc_crt::_alloca_probe
+native 00631810 msvc_crt::_ftol
 
-# The CRT's locale-dependent functions (src/crt.cpp).
-replace 0040C12D tolower
-replace 0040F54D toupper
-replace 00411680 _strcmpi
-replace 00411750 _strnicmp
-replace 006322F0 _memicmp
-replace 00631420 _strlwr
-replace 00631554 _strupr
-replace 00631688 isalpha
-replace 006316B6 isdigit
-replace 006316DE isspace
-replace 00631706 isalnum
-replace 00631734 iscntrl
-replace 0040C0B8 _isctype
+# The CRT's locale-dependent functions (SwARc's msvc_crt::vc6, on the
+# locale globals src/main.cpp gives it).
+native 0040C12D msvc_crt::vc6::tolower
+native 0040F54D msvc_crt::vc6::toupper
+native 00411680 msvc_crt::vc6::_strcmpi
+native 00411750 msvc_crt::vc6::_strnicmp
+native 006322F0 msvc_crt::vc6::_memicmp
+native 00631420 msvc_crt::vc6::_strlwr
+native 00631554 msvc_crt::vc6::_strupr
+native 00631688 msvc_crt::vc6::isalpha
+native 006316B6 msvc_crt::vc6::isdigit
+native 006316DE msvc_crt::vc6::isspace
+native 00631706 msvc_crt::vc6::isalnum
+native 00631734 msvc_crt::vc6::iscntrl
+native 0040C0B8 msvc_crt::vc6::_isctype
+native 004118DC msvc_crt::vc6::atoi
+native 00411851 msvc_crt::vc6::atol
+native 0040D465 msvc_crt::vc6::strtol
+
+# VC6's floor and ceil (x87 state as theirs).
+native 006323E1 msvc_crt::vc6::floor
+native 00631CB5 msvc_crt::vc6::ceil

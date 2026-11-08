@@ -26,6 +26,10 @@ replace 0066192A
 replace 00672701
 replace 006729D3
 
+# World frustums widened with it (src/world_frustum.cpp): SiegeFrustum's
+# SetDimensions.
+replace 006804BA
+
 # The screen rectangles the main window is created with and pinned to
 # (src/window.cpp): the host desktop.
 replace 0043A408

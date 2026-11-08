@@ -196,6 +196,31 @@ hand.
   went from 1.732 x 3.079 to 1.299 x 2.309 (4:3's vertical); more ground
   at the sides, nothing culled at the edges. 5:4 and 4:3 unchanged.
   Click-to-move and drag-select not yet tried by hand.
+- World frustums (src/world_frustum.cpp, 2026-11-08). Nodes and objects
+  load only inside axis-aligned boxes around their owners, sized in one
+  place, SiegeFrustum::SetDimensions 0x6804BA (__thiscall width, height:
+  half-extents in metres), from WorldMap::RCSet's world_frustum_radius /
+  world_frustum_height (+0x34/+0x38 of the WorldMap at [0x7A0634];
+  defaults 45 / 100000) in Player::RCSetInitialFrustum 0x560591 and the
+  server's per-Go frustum 0x57BE06, and from the mood's frustum_width /
+  frustum_height as ManageMoods blends them (0x590A87). With Hor+ the
+  screen's sides reached past the 45 m box: in the opening cutscene at
+  1920x1080 the clear colour (99,99,99) showed beyond the mill where 4:3
+  showed trees. The width is now scaled by A * 3/4 for aspect A > 4/3 (60
+  m at 16:9), A the wider of the desktop's and Rapi's: the player's
+  frustum is made while the front end is still at 800x600. A 3x box (135
+  m at 16:9) filled the rest with terrain that was fully fogged and
+  slowed the game. The far clip is Rapi 0x652F96: the
+  fog's far distance times Rapi+0xE94 while fog is on (+0xE84; mood
+  fog_far_dist, about 33 m in the cutscene, linear vertex fog
+  D3DRENDERSTATE_FOGVERTEXMODE 3, black), else Rapi+0xE90 (75); doubling
+  it changed no frame. The grey beside the ruins at the start of the
+  cutscene is the edge of that set: no wider box or farther clip draws
+  anything there (4:3 shows its corners too).
+- Automated runs: DS1_DESKTOP=WxH (SwARc branch desktop-size) is the
+  desktop the game sees, so its window stays that size; scripted pointer
+  positions scale with it (out/runs/newgame_1080.txt: newgame.txt halved
+  for 1920x1080 on the 1.5x desktop).
 - The front end runs at 800x600 (pillarboxed on wide screens, like
   CoD1's 4:3 menus); the game switches to the configured size in game.
 - UI scale (src/ui_scale.cpp). The UI is laid out in screen pixels:

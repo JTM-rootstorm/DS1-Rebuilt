@@ -1,5 +1,57 @@
 # Findings
 
+## CRT (2026-11-07, branch native-crt, src/crt.cpp)
+First step from lifted to native source: the statically linked VC6 CRT.
+- Identification: byte signatures of VC6's static runtime libraries name
+  802 functions (CRT, C++ EH runtime, a few Dinkumware STL helpers),
+  each checked here against the disassembly. The CRT sits in
+  0x409CA0-0x411C64, 0x631420-0x637950 and 0x71EA90-0x71EB75.
+  Signature names to correct: 0x40C7E0/0x40C7F0 are strcpy/strcat
+  (VC6's strcat.asm; named _mbscpy/_mbscat), and 0x40D130, named memcpy
+  like 0x40C930, is memmove (VC6 builds both from one source).
+- No malloc, free, new or delete among them: the game's allocator is its
+  own (VirtualAlloc, 10 call sites); the CRT's heap only serves the CRT.
+- Most string and memory calls were inlined by the compiler (rep movs,
+  repne scasb), so the out-of-line functions have few call sites. The
+  most called: atexit (11208, static initialisers), std::_Lockit (601),
+  _ftol (331), wcslen (187), _strcmpi (169), floor (103), memcpy (83).
+- Native now (28, manifest `replace`): memset, memcpy, memmove, memchr,
+  strlen, strcpy, strcat, strncpy, strncat, strcmp, strncmp, strchr,
+  strrchr, strstr, strcspn, strpbrk, wcslen, wcscpy, wcsncpy, wcschr,
+  wcsrchr, wcscspn, _allmul, _aulldiv, _aullrem, _allshl, _alloca_probe,
+  _ftol. _ftol uses the x87 model's fistp under RC=chop, as the
+  original does (NaN, out-of-range and flags as the hardware). A zero
+  divisor in _aulldiv/_aullrem hands over to the original, whose div
+  raises it. A fault on an uncommitted guest page from the native code
+  goes to the game's filters as from lifted code (dispatch.cpp's handler
+  takes faults in guest memory from any non-HLE host code).
+- Oracle: tests/crt_test.cpp (ctest crt_oracle, with DS1_GAME_EXE) runs
+  each original, lifted with --only, and the native function from the same
+  memory and registers on random arguments, every alignment, bytes and
+  units above 0x7F, overlapping memcpy/memmove, 64-bit values at the
+  helpers' shortcuts, _alloca_probe sizes up to 256 KiB, and _ftol on
+  every class of ST0 under every PC/RC. Compared: EAX, EDX for 64-bit
+  results, ESP, EBX, ESI, EDI, EBP, ECX for _alloca_probe, every data
+  byte, the stack at and above ESP, and the x87 state: 5399722 calls,
+  0 mismatches. Not compared: strcpy/strcat between overlapping strings
+  (undefined; the originals copy forwards a dword at a time). Mutations
+  caught: strncmp's sign, strncpy's padding, _alloca_probe's saved ECX,
+  _ftol's chop, _allshl's 64, wcschr's NUL. Two more (wcsncpy with one
+  unit left at the NUL, strncat with n = 0) turned out not to change any
+  result.
+- Run: a scripted new game (isolated profile) reaches the farm as before;
+  ctest 22/22.
+- Locale: the game calls setlocale(LC_CTYPE, ".<code page>") at startup
+  (0x421E0C), so _strcmpi, _strnicmp, tolower, toupper, _strlwr and
+  _strupr always take the CRT's locale path (_pctype, LCMapStringA), not
+  the ASCII one.
+- Next: those locale-dependent ones (ASCII natively, reading the guest's
+  _pctype; anything over 0x7F to the original), the is* classifiers,
+  atoi/atol/strtol, floor/ceil/_CIpow/_CIfmod on the x87 model, the
+  sprintf/sscanf family (float formatting through _cfltcvt), then the
+  STL (std::_Lockit, and the template instantiations in game code, which
+  signatures cannot name).
+
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with
 SwARc's SDL_GPU backend on native Metal (no dxvk). Symbols from a

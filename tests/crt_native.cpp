@@ -1,0 +1,30 @@
+// src/crt.cpp for tests/crt_test.cpp, its entry points renamed.
+#define f_0040C8D0 n_0040C8D0
+#define f_0040C930 n_0040C930
+#define f_0040D130 n_0040D130
+#define f_00631C10 n_00631C10
+#define f_0040CC70 n_0040CC70
+#define f_0040C7E0 n_0040C7E0
+#define f_0040C7F0 n_0040C7F0
+#define f_0040DA70 n_0040DA70
+#define f_00632090 n_00632090
+#define f_00410580 n_00410580
+#define f_0040D7E0 n_0040D7E0
+#define f_0040D6A0 n_0040D6A0
+#define f_00631BE0 n_00631BE0
+#define f_0040D760 n_0040D760
+#define f_00410610 n_00410610
+#define f_00410650 n_00410650
+#define f_00409DAE n_00409DAE
+#define f_00632024 n_00632024
+#define f_0071EB34 n_0071EB34
+#define f_00631E9E n_00631E9E
+#define f_00632049 n_00632049
+#define f_00631D84 n_00631D84
+#define f_00411C30 n_00411C30
+#define f_0040E0D0 n_0040E0D0
+#define f_0040E140 n_0040E140
+#define f_00637090 n_00637090
+#define f_0040D820 n_0040D820
+#define f_00631810 n_00631810
+#include "../src/crt.cpp"

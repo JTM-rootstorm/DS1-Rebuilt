@@ -53,3 +53,33 @@ replace 0043CB2E
 replace 00656E02
 replace 006576EA
 replace 0065780F
+
+# The VC6 CRT's string, memory and integer helpers (src/crt.cpp).
+replace 0040C8D0 memset
+replace 0040C930 memcpy
+replace 0040D130 memmove
+replace 00631C10 memchr
+replace 0040CC70 strlen
+replace 0040C7E0 strcpy
+replace 0040C7F0 strcat
+replace 0040DA70 strncpy
+replace 00632090 strncat
+replace 00410580 strcmp
+replace 0040D7E0 strncmp
+replace 0040D6A0 strchr
+replace 00631BE0 strrchr
+replace 0040D760 strstr
+replace 00410610 strcspn
+replace 00410650 strpbrk
+replace 00409DAE wcslen
+replace 00632024 wcscpy
+replace 0071EB34 wcsncpy
+replace 00631E9E wcschr
+replace 00632049 wcsrchr
+replace 00631D84 wcscspn
+replace 00411C30 _allmul
+replace 0040E0D0 _aulldiv
+replace 0040E140 _aullrem
+replace 00637090 _allshl
+replace 0040D820 _alloca_probe
+replace 00631810 _ftol

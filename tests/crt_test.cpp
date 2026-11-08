@@ -14,7 +14,16 @@
 // overlapping strings (undefined in C; the originals copy forwards a
 // dword at a time, the native code as memmove), and division by zero in
 // _aulldiv/_aullrem, which the native code hands to the original.
+//
+// The locale-dependent functions run in the C locale and in a code page
+// locale as the game's setlocale leaves it (__lc_handle[LC_CTYPE] set,
+// _pctype pointing at a table with Latin-1 letters over 0x7F, code page
+// 1252), and with __mb_cur_max 2. The originals' kernel32 calls go to
+// the stubs below, which map case and classify like SwARc's (Latin-1 for
+// Windows-1252); the game's allocator, which _strlwr and _strupr use for
+// their buffer, is a bump allocator here, and its memory is not compared.
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +45,9 @@ uint8_t* g_guest_base = nullptr;
   X(0040C8D0) X(0040C930) X(0040D130) X(00631C10) X(0040CC70) X(0040C7E0) X(0040C7F0)            \
   X(0040DA70) X(00632090) X(00410580) X(0040D7E0) X(0040D6A0) X(00631BE0) X(0040D760)            \
   X(00410610) X(00410650) X(00409DAE) X(00632024) X(0071EB34) X(00631E9E) X(00632049)            \
-  X(00631D84) X(00411C30) X(0040E0D0) X(0040E140) X(00637090) X(0040D820) X(00631810)
+  X(00631D84) X(00411C30) X(0040E0D0) X(0040E140) X(00637090) X(0040D820) X(00631810)            \
+  X(0040C12D) X(0040F54D) X(00411680) X(00411750) X(006322F0) X(00631420) X(00631554)            \
+  X(00631688) X(006316B6) X(006316DE) X(00631706) X(00631734) X(0040C0B8)
 
 namespace gen {
 #define DECLARE(va)                 \
@@ -45,9 +56,154 @@ namespace gen {
   void f_##va(Ctx& c) { f_##va##_lifted(c); }
 CRT_FUNCTIONS(DECLARE)
 #undef DECLARE
+
+// The game's allocator (0x403BB0, cdecl malloc) and its free (0x403BA0):
+// a bump allocator.
+constexpr uint32_t kHeap = 0x2E000000, kHeapSize = 0x100000;
+uint32_t g_heap_next = kHeap;
+void f_00403BB0(Ctx& c) {
+  const uint32_t n = (*reinterpret_cast<uint32_t*>(g_guest_base + c.esp + 4) + 15) & ~15u;
+  if (g_heap_next + n > kHeap + kHeapSize) g_heap_next = kHeap;
+  c.eax = g_heap_next;
+  g_heap_next += n;
+  c.esp += 4;
+}
+void f_00403BA0(Ctx& c) { c.esp += 4; }
+// The CRT's _lock: only taken while setlocale runs (its _unlock is lifted
+// with the rest; it would reach LeaveCriticalSection, which Dispatch
+// refuses).
+void f_0040B408(Ctx&) {
+  std::printf("unexpected _lock\n");
+  std::abort();
+}
+void f_0040A1CE(Ctx&) {
+  std::printf("unexpected _exit\n");
+  std::abort();
+}
 }  // namespace gen
 
-void Dispatch(Ctx&, uint32_t target, uint32_t va) {
+PeImage* g_exe = nullptr;
+
+// Case and classes of a character, as SwARc's HLE has them for
+// Windows-1252 (CharType1, MapCase), on the code page's own values (the
+// conversions below keep them): Latin-1's letters, and 1252's
+// S/Z/OE with caron and Y with diaeresis (0x8A/0x9A, 0x8E/0x9E,
+// 0x8C/0x9C, 0x9F/0xFF).
+bool IsUpper(uint32_t u) {
+  return (u >= 'A' && u <= 'Z') || (u >= 0xC0 && u <= 0xDE && u != 0xD7) || u == 0x8A ||
+         u == 0x8C || u == 0x8E || u == 0x9F;
+}
+bool IsLower(uint32_t u) {
+  return (u >= 'a' && u <= 'z') || (u >= 0xDF && u <= 0xFF && u != 0xF7) || u == 0x9A ||
+         u == 0x9C || u == 0x9E;
+}
+uint16_t MapCaseUnit(uint16_t u, uint32_t flags) {
+  const bool c1 = u >= 0x80 && u < 0xA0;  // 1252's letters in the C1 range
+  if ((flags & 0x100) && IsUpper(u)) return u == 0x9F ? 0xFF : c1 ? u + 0x10 : u + 0x20;
+  if ((flags & 0x200) && IsLower(u) && u != 0xDF)
+    return u == 0xFF ? 0x9F : c1 ? u - 0x10 : u - 0x20;
+  return u;
+}
+uint16_t CharType1(uint32_t u) {
+  uint16_t t = 0;
+  if (IsUpper(u)) t |= 0x101;
+  if (IsLower(u)) t |= 0x102;
+  if (u >= '0' && u <= '9') t |= 0x84;  // C1_DIGIT | C1_XDIGIT
+  if ((u >= 9 && u <= 13) || u == ' ' || u == 0xA0) t |= 0x08;
+  if (u == ' ' || u == 0xA0) t |= 0x40;
+  if (u < 0x20 || u == 0x7F) t |= 0x20;
+  if ((u >= 0x21 && u <= 0x2F) || (u >= 0x3A && u <= 0x40) || (u >= 0x5B && u <= 0x60) ||
+      (u >= 0x7B && u <= 0x7E) || (u >= 0xA1 && u <= 0xBF) || u == 0xD7 || u == 0xF7)
+    t |= 0x10;
+  return t;
+}
+
+// kernel32 as the CRT's locale code calls it (stdcall: the callee pops).
+bool Kernel32(Ctx& c, const std::string& name) {
+  auto arg = [&](int n) { return *reinterpret_cast<uint32_t*>(g_guest_base + c.esp + 4 + 4 * n); };
+  auto u8 = [&](uint32_t a) { return g_guest_base[a]; };
+  auto u16 = [&](uint32_t a) { return *reinterpret_cast<uint16_t*>(g_guest_base + a); };
+  auto w8 = [&](uint32_t a, uint8_t v) { g_guest_base[a] = v; };
+  auto w16 = [&](uint32_t a, uint16_t v) { *reinterpret_cast<uint16_t*>(g_guest_base + a) = v; };
+  auto ret = [&](uint32_t v, int nargs) {
+    c.eax = v;
+    c.esp += 4 + 4 * nargs;
+  };
+  if (name == "InterlockedIncrement" || name == "InterlockedDecrement") {
+    uint32_t& v = *reinterpret_cast<uint32_t*>(g_guest_base + arg(0));
+    v += name == "InterlockedIncrement" ? 1 : -1;
+    ret(v, 1);
+  } else if (name == "GetLastError") {
+    ret(0, 0);
+  } else if (name == "SetLastError") {
+    ret(0, 1);
+  } else if (name == "LCMapStringW" || name == "LCMapStringA") {
+    const bool w = name == "LCMapStringW";
+    const uint32_t flags = arg(1), src = arg(2), dst = arg(4), cap = arg(5);
+    int32_t n = int32_t(arg(3));
+    if (n < 0) {
+      n = 1;
+      while (w ? u16(src + 2 * (n - 1)) : u8(src + n - 1)) n++;
+    }
+    if (!cap) return ret(uint32_t(n), 6), true;
+    if (uint32_t(n) > cap) return ret(0, 6), true;
+    for (int32_t i = 0; i < n; i++) {
+      if (w)
+        w16(dst + 2 * i, MapCaseUnit(u16(src + 2 * i), flags));
+      else
+        w8(dst + i, uint8_t(MapCaseUnit(u8(src + i), flags)));
+    }
+    ret(uint32_t(n), 6);
+  } else if (name == "MultiByteToWideChar") {
+    const uint32_t src = arg(2), dst = arg(4), cap = arg(5);
+    int32_t n = int32_t(arg(3));
+    if (n < 0) {
+      n = 1;
+      while (u8(src + n - 1)) n++;
+    }
+    if (!cap) return ret(uint32_t(n), 6), true;
+    if (uint32_t(n) > cap) return ret(0, 6), true;
+    for (int32_t i = 0; i < n; i++) w16(dst + 2 * i, u8(src + i));
+    ret(uint32_t(n), 6);
+  } else if (name == "WideCharToMultiByte") {
+    const uint32_t src = arg(2), dst = arg(4), cap = arg(5);
+    int32_t n = int32_t(arg(3));
+    if (n < 0) {
+      n = 1;
+      while (u16(src + 2 * (n - 1))) n++;
+    }
+    if (!cap) return ret(uint32_t(n), 8), true;
+    if (uint32_t(n) > cap) return ret(0, 8), true;
+    for (int32_t i = 0; i < n; i++) {
+      const uint16_t u = u16(src + 2 * i);
+      w8(dst + i, u > 0xFF ? '?' : uint8_t(u));
+    }
+    ret(uint32_t(n), 8);
+  } else if (name == "GetStringTypeA" || name == "GetStringTypeW") {
+    const bool w = name == "GetStringTypeW";
+    const int k = w ? 0 : 1;
+    const uint32_t src = arg(k + 1), out = arg(k + 3);
+    int32_t n = int32_t(arg(k + 2));
+    if (n < 0) {
+      n = 1;
+      while (w ? u16(src + 2 * (n - 1)) : u8(src + n - 1)) n++;
+    }
+    for (int32_t i = 0; i < n; i++) w16(out + 2 * i, CharType1(w ? u16(src + 2 * i) : u8(src + i)));
+    ret(1, w ? 4 : 5);
+  } else {
+    return false;
+  }
+  return true;
+}
+
+void Dispatch(Ctx& c, uint32_t target, uint32_t va) {
+  if (target - kThunkBase < kThunkRegionSize)
+    for (const PeImport& i : g_exe->imports)
+      if (i.thunk_va == target) {
+        if (i.dll == "KERNEL32.dll" && Kernel32(c, i.name)) return;
+        std::printf("unexpected call to %s!%s from %08X\n", i.dll.c_str(), i.name.c_str(), va);
+        std::abort();
+      }
   std::printf("unexpected call to %08X from %08X\n", target, va);
   std::abort();
 }
@@ -102,6 +258,8 @@ constexpr uint32_t kStack = 0x2FE00000, kStackSize = 0x100000, kStackTop = kStac
 // The part of the stack a call can write: frames start in the top 4.3 KiB
 // and _alloca_probe moves ESP down by at most 256 KiB.
 constexpr uint32_t kStackUsed = 0x48000;
+// A TEB for the SEH frames some originals set up (fs:[0]).
+constexpr uint32_t kTeb = 0x2E300000;
 
 uint32_t Rand(uint32_t n) { return uint32_t(g_rng() % n); }
 
@@ -162,6 +320,7 @@ Ctx Frame(std::initializer_list<uint32_t> args) {
   c.eax = g_rng(), c.ecx = g_rng(), c.edx = g_rng(), c.ebx = g_rng();
   c.ebp = g_rng(), c.esi = g_rng(), c.edi = g_rng();
   c.esp = kStackTop - 0x1000 - 4 * Rand(64);
+  c.fs_base = kTeb;
   recomp::x87::Init(c.fpu);
   uint32_t p = c.esp;
   g_mem.write<uint32_t>(p, 0xDEAD0000);
@@ -334,6 +493,87 @@ void Ftol(Stats& s) {
   }
 }
 
+// The locale: the C locale as the image starts, or a code page locale as
+// setlocale(LC_CTYPE, ".1252") leaves it, with or without a multibyte
+// __mb_cur_max.
+constexpr uint32_t kCtypeHandle = 0x79D260, kCodePage = 0x79D270, kMbCurMax = 0x75D808,
+                   kPctype = 0x75D814;
+constexpr uint32_t kTable = 0x2E200400;  // the code page's ctype table, from index -1
+uint32_t g_c_pctype = 0;
+
+enum class Locale { C, CodePage, Multibyte };
+
+void SetLocale(Locale l) {
+  g_mem.write<uint32_t>(kCtypeHandle, l == Locale::C ? 0 : 0x0409);
+  g_mem.write<uint32_t>(kCodePage, l == Locale::C ? 0 : 1252);
+  g_mem.write<uint32_t>(kMbCurMax, l == Locale::Multibyte ? 2 : 1);
+  g_mem.write<uint32_t>(kPctype, l == Locale::C ? g_c_pctype : kTable + 2);
+}
+
+const char* LocaleName(Locale l) {
+  return l == Locale::C ? "C" : l == Locale::CodePage ? "cp1252" : "mb";
+}
+
+// Strings of letters in both cases with other ASCII, and in a quarter of
+// them Latin-1 letters and other bytes over 0x7F.
+uint32_t PutText(uint32_t len, uint32_t lo, uint32_t hi, bool high) {
+  static const uint8_t ascii[] = {'a', 'b', 'z', 'A', 'B', 'Z', '@', '[', '`', '{', '_', '1', ' '};
+  static const uint8_t latin[] = {0xC4, 0xE4, 0xD7, 0xF7, 0xDF, 0xFF, 0x80, 0xA0, 0x8A, 0x9A, 0x9F};
+  const uint32_t at = kData + lo + Rand(hi - lo - len - 8);
+  for (uint32_t i = 0; i < len; i++)
+    g_mem.write<uint8_t>(at + i, high && !Rand(6) ? latin[Rand(sizeof latin)] : ascii[Rand(sizeof ascii)]);
+  g_mem.write<uint8_t>(at + len, 0);
+  return at;
+}
+// b as a with some bytes' case flipped, and now and then one changed or
+// the string cut short.
+uint32_t PutVariant(uint32_t a, uint32_t lo, uint32_t hi, bool high) {
+  uint32_t len = 0;
+  while (g_mem.read<uint8_t>(a + len)) len++;
+  const uint32_t b = PutText(len, lo, hi, high);
+  for (uint32_t i = 0; i < len; i++) {
+    uint8_t ch = g_mem.read<uint8_t>(a + i);
+    if (Rand(3) == 0 && ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'z')) ch ^= 0x20;
+    if (Rand(3) == 0 && ch >= 0xC0 && ch != 0xD7 && ch != 0xF7) ch ^= 0x20;
+    g_mem.write<uint8_t>(b + i, ch);
+  }
+  if (len && !Rand(3)) g_mem.write<uint8_t>(b + Rand(len), "aZ{\x80"[Rand(4)]);
+  if (len && !Rand(4)) g_mem.write<uint8_t>(b + Rand(len), 0);
+  return b;
+}
+
+void LocaleFunctions(Stats& s) {
+  for (Locale l : {Locale::C, Locale::CodePage, Locale::Multibyte}) {
+    SetLocale(l);
+    for (int i = 0; i < 40000; i++) {
+      FillData();
+      const bool high = !Rand(4);
+      const uint32_t a = PutText(Len(), 0, 0x1800, high);
+      const uint32_t b = Rand(4) ? PutVariant(a, 0x2000, 0x3800, high) : PutText(Len(), 0x2000, 0x3800, high);
+      const uint32_t n = Rand(4) ? Rand(32) : Rand(600);
+      const std::string w = std::string(LocaleName(l)) + " " + std::to_string(i);
+      Check(FN(00411680), Frame({a, b}), 0, s, w);
+      Check(FN(00411750), Frame({a, b, n}), 0, s, w);
+      Check(FN(006322F0), Frame({a, b, std::min<uint32_t>(n, 0x800)}), 0, s, w);
+      Check(FN(00631420), Frame({a}), 0, s, w);
+      Check(FN(00631554), Frame({a}), 0, s, w);
+      // Characters: every byte, EOF, signed chars, and beyond 255.
+      const int32_t ch = Rand(2) ? int32_t(Rand(256)) : int32_t(Rand(700)) - 200;
+      Check(FN(0040C12D), Frame({uint32_t(ch)}), 0, s, w);
+      Check(FN(0040F54D), Frame({uint32_t(ch)}), 0, s, w);
+      // The classes read the table for any int; keep to its neighbourhood.
+      const int32_t cc = int32_t(Rand(384)) - 128;
+      Check(FN(00631688), Frame({uint32_t(cc)}), 0, s, w);
+      Check(FN(006316B6), Frame({uint32_t(cc)}), 0, s, w);
+      Check(FN(006316DE), Frame({uint32_t(cc)}), 0, s, w);
+      Check(FN(00631706), Frame({uint32_t(cc)}), 0, s, w);
+      Check(FN(00631734), Frame({uint32_t(cc)}), 0, s, w);
+      Check(FN(0040C0B8), Frame({uint32_t(ch), Rand(2) ? 0xFFFFu : 1u << Rand(16)}), 0, s, w);
+    }
+  }
+  SetLocale(Locale::C);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -346,6 +586,7 @@ int main(int argc, char** argv) {
   recomp::g_guest_base = g_mem.base();
   // The image: memcpy's jump tables are in it.
   recomp::PeImage exe;
+  recomp::g_exe = &exe;
   std::string err;
   if (!exe.Load(argv[1], g_mem, &err)) {
     std::printf("%s: %s\n", argv[1], err.c_str());
@@ -353,7 +594,19 @@ int main(int argc, char** argv) {
   }
   g_mem.Commit(kData, kDataSize, recomp::Prot::RW);
   g_mem.Commit(kStack, kStackSize, recomp::Prot::RW);
+  g_mem.Commit(recomp::gen::kHeap, recomp::gen::kHeapSize, recomp::Prot::RW);
+  g_mem.Commit(kTeb, 0x1000, recomp::Prot::RW);
+  g_mem.write<uint32_t>(kTeb, 0xFFFFFFFF);  // the end of the SEH chain
+  // The code page's ctype table: the C locale's below 0x80 (the image's),
+  // Latin-1 classes above.
+  g_mem.Commit(kTable & ~0xFFFu, 0x1000, recomp::Prot::RW);
+  g_c_pctype = g_mem.read<uint32_t>(kPctype);
+  for (int ch = -1; ch < 256; ch++)
+    g_mem.write<uint16_t>(kTable + 2 + 2 * ch,
+                          ch < 0x80 ? g_mem.read<uint16_t>(g_c_pctype + 2 * ch)
+                                    : recomp::CharType1(uint32_t(ch)));
   Stats s;
+  LocaleFunctions(s);
   Strings(s);
   Memory(s);
   WideStrings(s);

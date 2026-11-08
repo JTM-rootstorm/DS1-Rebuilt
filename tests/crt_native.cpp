@@ -27,4 +27,17 @@
 #define f_00637090 n_00637090
 #define f_0040D820 n_0040D820
 #define f_00631810 n_00631810
+#define f_0040C12D n_0040C12D
+#define f_0040F54D n_0040F54D
+#define f_00411680 n_00411680
+#define f_00411750 n_00411750
+#define f_006322F0 n_006322F0
+#define f_00631420 n_00631420
+#define f_00631554 n_00631554
+#define f_00631688 n_00631688
+#define f_006316B6 n_006316B6
+#define f_006316DE n_006316DE
+#define f_00631706 n_00631706
+#define f_00631734 n_00631734
+#define f_0040C0B8 n_0040C0B8
 #include "../src/crt.cpp"

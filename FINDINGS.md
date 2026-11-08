@@ -44,10 +44,45 @@ First step from lifted to native source: the statically linked VC6 CRT.
 - Locale: the game calls setlocale(LC_CTYPE, ".<code page>") at startup
   (0x421E0C), so _strcmpi, _strnicmp, tolower, toupper, _strlwr and
   _strupr always take the CRT's locale path (_pctype, LCMapStringA), not
-  the ASCII one.
-- Next: those locale-dependent ones (ASCII natively, reading the guest's
-  _pctype; anything over 0x7F to the original), the is* classifiers,
-  atoi/atol/strtol, floor/ceil/_CIpow/_CIfmod on the x87 model, the
+  the ASCII one. Its globals: __lc_handle[LC_CTYPE] 0x79D260 (0: the C
+  locale), __lc_codepage 0x79D270, __mb_cur_max 0x75D808, _pctype
+  0x75D814, __setlc_active 0x7A7DD8, __unguarded_readlc_active
+  0x7A7DDC.
+- Native too (13 more): tolower, toupper, _strcmpi, _strnicmp,
+  _memicmp, _strlwr, _strupr, isalpha, isdigit, isspace, isalnum,
+  iscntrl, _isctype. Classes come from the guest's ctype table, read
+  where the originals read it (any int; -1..255 for _isctype); 'A'-'Z'
+  and 'a'-'z' map to each other, as LCMapString does in every code page.
+  The originals' work, run from the start, for: another character the
+  table marks for mapping, a string with a byte over 0x7F in
+  _strlwr/_strupr (LCMapString maps the whole string; Windows-1252 has
+  letters at 0x8A-0x9F too), a multibyte code page, values from 256 up.
+  Kept from the originals: tolower/toupper leave their result in the
+  argument's stack slot in the locale path; at a NUL, _strnicmp compares
+  the bytes themselves; _strcmpi and _memicmp compare lowered bytes,
+  _strnicmp lowered ints. Not kept: the locale lock (setlocale runs once,
+  at startup, before other threads), and _strlwr/_strupr's buffer from
+  the game's allocator (0x403BB0/0x403BA0; the original maps into it and
+  copies back).
+  - crt_oracle covers them in the C locale, a code page locale as the
+    game's setlocale leaves it (handle and code page set, a table with
+    Latin-1 and 1252's C1-range letters) and with __mb_cur_max 2, on
+    strings of mixed-case ASCII with Latin-1/1252 bytes in a quarter,
+    compared against case-flipped, changed or cut variants of
+    themselves. The originals' kernel32 calls (LCMapStringA/W,
+    Multi/WideChar conversions, GetStringTypeA/W, Interlocked*) are stubs
+    that map like SwARc's HLE; the allocator and _lock are stubs
+    (tests/crt_stubs.manifest). 6959418 calls in all, 0 mismatches.
+    Mutations caught: the result in the argument's slot, the delta, the
+    signed byte compare, the NUL rule, the 0x80 hand-over of _strlwr
+    (only once the stub had 1252's C1 letters), isalpha's mask, the
+    letter range, the multibyte hand-over.
+  - Run: the scripted new game reaches the farm, the log as before (but
+    for the frame the intro is skipped at); ctest 22/22.
+- Left for later in this group: _wcsicmp/_wcsnicmp (16 + 4 calls). Their
+  towlower (0x634456) returns 16 bits in AX over whatever EAX held, and
+  they store whole registers into their argument slots.
+- Next: atoi/atol/strtol, floor/ceil/_CIpow/_CIfmod on the x87 model, the
   sprintf/sscanf family (float formatting through _cfltcvt), then the
   STL (std::_Lockit, and the template instantiations in game code, which
   signatures cannot name).

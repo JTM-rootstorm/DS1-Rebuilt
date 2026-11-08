@@ -83,3 +83,18 @@ replace 0040E140 _aullrem
 replace 00637090 _allshl
 replace 0040D820 _alloca_probe
 replace 00631810 _ftol
+
+# The CRT's locale-dependent functions (src/crt.cpp).
+replace 0040C12D tolower
+replace 0040F54D toupper
+replace 00411680 _strcmpi
+replace 00411750 _strnicmp
+replace 006322F0 _memicmp
+replace 00631420 _strlwr
+replace 00631554 _strupr
+replace 00631688 isalpha
+replace 006316B6 isdigit
+replace 006316DE isspace
+replace 00631706 isalnum
+replace 00631734 iscntrl
+replace 0040C0B8 _isctype

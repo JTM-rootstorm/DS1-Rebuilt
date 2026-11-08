@@ -19,6 +19,19 @@ namespace recomp::gen {
 
 void f_0040E0D0_lifted(Ctx& c);
 void f_0040E140_lifted(Ctx& c);
+void f_0040C12D_lifted(Ctx& c);
+void f_0040F54D_lifted(Ctx& c);
+void f_00411680_lifted(Ctx& c);
+void f_00411750_lifted(Ctx& c);
+void f_006322F0_lifted(Ctx& c);
+void f_00631420_lifted(Ctx& c);
+void f_00631554_lifted(Ctx& c);
+void f_0040C0B8_lifted(Ctx& c);
+void f_00631688_lifted(Ctx& c);
+void f_006316B6_lifted(Ctx& c);
+void f_006316DE_lifted(Ctx& c);
+void f_00631706_lifted(Ctx& c);
+void f_00631734_lifted(Ctx& c);
 
 namespace {
 
@@ -292,6 +305,149 @@ void f_00631810(Ctx& c) {
   c.eax = uint32_t(v);
   c.edx = uint32_t(uint64_t(v) >> 32);
   c.esp += 4;
+}
+
+// --- The locale-dependent functions -------------------------------------
+//
+// The game sets LC_CTYPE to its code page at startup (setlocale at
+// 0x421E0C), so these take the CRT's locale path: the character classes
+// come from the ctype table setlocale built (GetStringTypeA), and case
+// mapping from LCMapString. Natively: the table is read where the
+// original reads it; 'A'-'Z' and 'a'-'z' map to each other, which is what
+// LCMapString does for them in every code page; any other character the
+// table marks for mapping, a multibyte code page (__mb_cur_max > 1) or a
+// value of 256 or more is the original's work, which then runs from the
+// start. The originals' lock on the locale (__unguarded_readlc_active,
+// or the setlocale lock while setlocale runs) is not taken: setlocale
+// runs once, at startup, before any other thread.
+
+namespace {
+
+constexpr uint32_t kCtypeHandle = 0x79D260;  // __lc_handle[LC_CTYPE]: 0 in the C locale
+constexpr uint32_t kMbCurMax = 0x75D808;     // __mb_cur_max
+constexpr uint32_t kPctype = 0x75D814;       // _pctype: the ctype table, from index -1
+constexpr uint16_t kUpper = 0x1, kLower = 0x2;
+
+bool CLocale() { return !Rd<uint32_t>(g_guest_base, kCtypeHandle); }
+bool Multibyte() { return int32_t(Rd<uint32_t>(g_guest_base, kMbCurMax)) > 1; }
+uint16_t Ctype(int32_t ch) {
+  return Rd<uint16_t>(g_guest_base, Rd<uint32_t>(g_guest_base, kPctype) + 2 * uint32_t(ch));
+}
+
+// _tolower_lk (0x40C19C) or, with `upper`, _toupper_lk (0x40F5BC) into
+// *out; false where the original's work is needed (above).
+bool MapCase(int32_t ch, bool upper, int32_t* out) {
+  const int32_t first = upper ? 'a' : 'A', delta = upper ? -0x20 : 0x20;
+  const bool letter = ch >= first && ch <= first + 25;
+  if (CLocale()) {
+    *out = letter ? ch + delta : ch;
+    return true;
+  }
+  if (ch >= 0x100 || Multibyte()) return false;
+  if (!(Ctype(ch) & (upper ? kLower : kUpper))) {
+    *out = ch;
+    return true;
+  }
+  if (!letter) return false;
+  *out = ch + delta;
+  return true;
+}
+
+// tolower/toupper: in the locale path the original leaves the result in
+// its argument's stack slot too.
+void ToCase(Ctx& c, bool upper, void (*original)(Ctx&)) {
+  int32_t r;
+  if (!MapCase(int32_t(Arg(c, 0)), upper, &r)) return original(c);
+  if (!CLocale()) Wr<uint32_t>(g_guest_base, c.esp + 4, uint32_t(r));
+  Ret(c, uint32_t(r));
+}
+
+// _strlwr/_strupr: in place. The original's locale path maps the string
+// with LCMapString into a buffer from the game's allocator (0x403BB0,
+// freed with 0x403BA0) and copies it back; here no buffer is made.
+void CaseString(Ctx& c, bool upper, void (*original)(Ctx&)) {
+  const uint32_t s = Arg(c, 0);
+  if (!CLocale())
+    for (const uint8_t* p = P(s); *p; p++)
+      if (*p >= 0x80) return original(c);
+  const uint8_t first = upper ? 'a' : 'A';
+  for (uint8_t* p = P(s); *p; p++)
+    if (uint8_t(*p - first) < 26) *p ^= 0x20;
+  Ret(c, s);
+}
+
+// isalpha and the others: the table's classes for ch, masked.
+void IsClass(Ctx& c, uint16_t mask, void (*original)(Ctx&)) {
+  if (Multibyte()) return original(c);
+  Ret(c, Ctype(int32_t(Arg(c, 0))) & mask);
+}
+
+}  // namespace
+
+// tolower(ch) (0x40C12D) and toupper(ch) (0x40F54D).
+void f_0040C12D(Ctx& c) { ToCase(c, false, f_0040C12D_lifted); }
+void f_0040F54D(Ctx& c) { ToCase(c, true, f_0040F54D_lifted); }
+
+// _strcmpi(a, b) -> -1, 0 or 1 (0x411680): bytes that differ are compared
+// lowered (as bytes).
+void f_00411680(Ctx& c) {
+  const uint8_t *a = P(Arg(c, 0)), *b = P(Arg(c, 1));
+  for (;; a++, b++) {
+    if (*a == *b) {
+      if (!*a) return Ret(c, 0);
+      continue;
+    }
+    int32_t x, y;
+    if (!MapCase(*a, false, &x) || !MapCase(*b, false, &y)) return f_00411680_lifted(c);
+    if (uint8_t(x) != uint8_t(y)) return Ret(c, uint8_t(x) < uint8_t(y) ? ~0u : 1);
+  }
+}
+
+// _strnicmp(a, b, n) -> -1, 0 or 1 (0x411750): at most n bytes, lowered;
+// at a NUL in either string the bytes themselves decide.
+void f_00411750(Ctx& c) {
+  const uint8_t *a = P(Arg(c, 0)), *b = P(Arg(c, 1));
+  for (uint32_t n = Arg(c, 2); n; n--, a++, b++) {
+    if (!*a || !*b) return Ret(c, *a == *b ? 0 : *a < *b ? ~0u : 1);
+    int32_t x, y;
+    if (!MapCase(*a, false, &x) || !MapCase(*b, false, &y)) return f_00411750_lifted(c);
+    if (x != y) return Ret(c, uint32_t(x) < uint32_t(y) ? ~0u : 1);
+  }
+  Ret(c, 0);
+}
+
+// _memicmp(a, b, n) -> -1, 0 or 1 (0x6322F0): n bytes, NULs included,
+// those that differ compared lowered (as bytes).
+void f_006322F0(Ctx& c) {
+  const uint8_t *a = P(Arg(c, 0)), *b = P(Arg(c, 1));
+  for (uint32_t n = Arg(c, 2); n; n--, a++, b++) {
+    if (*a == *b) continue;
+    int32_t x, y;
+    if (!MapCase(*a, false, &x) || !MapCase(*b, false, &y)) return f_006322F0_lifted(c);
+    if (uint8_t(x) != uint8_t(y)) return Ret(c, uint8_t(x) < uint8_t(y) ? ~0u : 1);
+  }
+  Ret(c, 0);
+}
+
+// _strlwr(s) -> s (0x631420) and _strupr(s) -> s (0x631554).
+void f_00631420(Ctx& c) { CaseString(c, false, f_00631420_lifted); }
+void f_00631554(Ctx& c) { CaseString(c, true, f_00631554_lifted); }
+
+// isalpha (0x631688), isdigit (0x6316B6), isspace (0x6316DE), isalnum
+// (0x631706), iscntrl (0x631734): _ALPHA = 0x103, _DIGIT = 4, _SPACE = 8,
+// _CONTROL = 0x20.
+void f_00631688(Ctx& c) { IsClass(c, 0x103, f_00631688_lifted); }
+void f_006316B6(Ctx& c) { IsClass(c, 0x004, f_006316B6_lifted); }
+void f_006316DE(Ctx& c) { IsClass(c, 0x008, f_006316DE_lifted); }
+void f_00631706(Ctx& c) { IsClass(c, 0x107, f_00631706_lifted); }
+void f_00631734(Ctx& c) { IsClass(c, 0x020, f_00631734_lifted); }
+
+// _isctype(ch, mask) (0x40C0B8): the table for -1..255 (in any code page);
+// the original's GetStringTypeA for the rest.
+void f_0040C0B8(Ctx& c) {
+  const int32_t ch = int32_t(Arg(c, 0));
+  if (uint32_t(ch + 1) > 0x100) return f_0040C0B8_lifted(c);
+  Ret(c, Ctype(ch) & Arg(c, 1));
 }
 
 }  // namespace recomp::gen

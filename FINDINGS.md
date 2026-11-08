@@ -217,10 +217,12 @@ hand.
   it changed no frame. The grey beside the ruins at the start of the
   cutscene is the edge of that set: no wider box or farther clip draws
   anything there (4:3 shows its corners too).
-- Automated runs: DS1_DESKTOP=WxH (SwARc branch desktop-size) is the
-  desktop the game sees, so its window stays that size; scripted pointer
-  positions scale with it (out/runs/newgame_1080.txt: newgame.txt halved
-  for 1920x1080 on the 1.5x desktop).
+- Automated runs: DS1_DESKTOP=WxH (SwARc <ID>_DESKTOP) is the
+  desktop the game sees, so its window stays that size. Scripted pointer
+  positions are the game's own pixels, independent of window and desktop:
+  the front end's are in 800x600 (out/runs/newgame_1080.txt: SINGLE
+  PLAYER 400 150, START NEW GAME 400 265, name box 400 508, NEXT 510 583,
+  NORMAL 400 292).
 - The front end runs at 800x600 (pillarboxed on wide screens, like
   CoD1's 4:3 menus); the game switches to the configured size in game.
 - UI scale (src/ui_scale.cpp). The UI is laid out in screen pixels:

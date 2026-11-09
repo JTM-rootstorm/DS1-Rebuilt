@@ -115,3 +115,8 @@ native 006323E1 msvc_crt::vc6::floor
 native 00631CB5 msvc_crt::vc6::ceil
 native 006324B0 msvc_crt::vc6::_CIpow
 native 006326DA msvc_crt::vc6::_CIfmod
+
+# VC6's printf engines, narrow and wide (string streams natively; files go
+# to the original).
+native 0040B596 msvc_crt::vc6::_output
+native 006330D6 msvc_crt::vc6::_woutput

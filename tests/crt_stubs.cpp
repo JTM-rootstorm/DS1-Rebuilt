@@ -52,6 +52,10 @@ void Setup(GuestMemory& mem) {
   mem.Commit(gen::kHeap, gen::kHeapSize + 0x1000, Prot::RW);  // and errno
   vc6::SetLocale(kCrtLocale);
   vc6::SetMath(kCrtMath);
+  // _cfltcvt_init (0x409D76): the floating-point conversions _output
+  // calls through.
+  const uint32_t cfltcvt_tab[] = {0x40A6D9, 0x40A383, 0x40A3E9, 0x40A329, 0x40A3D1, 0x40A6D9};
+  for (uint32_t i = 0; i < 6; i++) mem.write<uint32_t>(0x75D5E0 + 4 * i, cfltcvt_tab[i]);
 }
 
 }  // namespace recomp::native::msvc_crt::oracle

@@ -138,9 +138,32 @@ First step from lifted to native source: the statically linked VC6 CRT.
   - Run: the scripted new game reaches the farm, the log as before (but
     for the frame the intro is skipped at); ctest 27/27 (gfx_program
     skipped: no GPU device in the capped scope).
-- Next: the sprintf/sscanf family (float formatting through _cfltcvt),
-  then the STL (std::_Lockit, and the
-  template instantiations in game code, which signatures cannot name).
+- Native too (2026-11-08, SwARc msvc_crt::vc6): the format engines
+  _output 0x40B596 and _woutput 0x6330D6, under sprintf 0x40A127,
+  _snprintf 0x631840, _vsnprintf 0x6318CE and _vsnwprintf 0x6317A1, for
+  their string streams (_IOSTRG); a real FILE, a non-ASCII character in
+  the code-page locale the game sets, or a mid-format failure the native
+  cannot undo hands over to the lifted original.
+  - The state machine's classes and transitions are __lookuptable
+    0x720A98; %f/%e/%g go through _cfltcvt_tab 0x75D5E0 (_cfltcvt
+    0x40A6D9, also in _cldcvt's slot; _cropzeros 0x40A383, _fassign
+    0x40A3E9, _forcdecpt 0x40A329, _positive 0x40A3D1), the decimal point is __decimal_point
+    0x75D80C (src/crt_globals.h). The float chain is $I10_OUTPUT over a
+    12-byte long double (__multtenpow12, __ld12mul), 17 significant
+    digits, then _fptostr and _cftoe/_cftof/_cftog.
+  - msvc_crt_oracle: 9319148 calls, 0 mismatches (narrow 265k native /
+    35k handed over, wide 278k / 22k). Its lift takes _cfltcvt_tab's
+    targets (ENTRIES). Mutations caught: every flag, width/precision and
+    `*` path, the integer radix/sign/prefix code, the float formats and
+    rounding, the INF/NaN strings, the stream counts and the error
+    returns; survivors are unreachable (the ld12 multiply's exact tie and
+    sticky bit) or masked by the oracle's 1:1 code-page stubs.
+  - Run: the scripted new game reaches the farm, text and menus as
+    before, the log as before (but for the frame the intro is skipped
+    at); ctest 28/28.
+- Next: sscanf (_input 0x6338BA) and atof (_fltin2), then the STL
+  (std::_Lockit, and the template instantiations in game code, which
+  signatures cannot name).
 
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with

@@ -11,6 +11,7 @@ inline constexpr recomp::native::msvc_crt::vc6::Locale kCrtLocale{
     .codepage = 0x79D270,      // __lc_codepage
     .mb_cur_max = 0x75D808,    // __mb_cur_max
     .pctype = 0x75D814,        // _pctype
+    .decimal_point = 0x75D80C, // __decimal_point
 };
 
 inline constexpr recomp::native::msvc_crt::vc6::Math kCrtMath{

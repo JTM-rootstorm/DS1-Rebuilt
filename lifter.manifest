@@ -109,6 +109,9 @@ native 004118DC msvc_crt::vc6::atoi
 native 00411851 msvc_crt::vc6::atol
 native 0040D465 msvc_crt::vc6::strtol
 
-# VC6's floor and ceil (x87 state as theirs).
+# VC6's floor and ceil, and the intrinsics _CIpow and _CIfmod (x87 state
+# as theirs).
 native 006323E1 msvc_crt::vc6::floor
 native 00631CB5 msvc_crt::vc6::ceil
+native 006324B0 msvc_crt::vc6::_CIpow
+native 006326DA msvc_crt::vc6::_CIfmod

@@ -6,7 +6,7 @@ First step from lifted to native source: the statically linked VC6 CRT.
   (recomp_msvc_crt, platforms/win32/docs/msvc_crt.md), shared by every
   game that links an MSVC CRT statically; lifter.manifest binds the EXE's
   copies with `native <va> msvc_crt::<name>` (the locale ones
-  msvc_crt::vc6::<name>, their globals in src/crt_locale.h). The oracle
+  msvc_crt::vc6::<name>, their globals in src/crt_globals.h). The oracle
   is SwARc's too (ctest msvc_crt_oracle, with DS1_GAME_EXE; the game's
   stubs in tests/crt_stubs.cpp and tests/crt_stubs.manifest). What
   follows was found and measured while they were src/crt.cpp here.
@@ -112,8 +112,34 @@ First step from lifted to native source: the statically linked VC6 CRT.
   - Run: the scripted new game (out/runs/newgame_1080.txt plus Escape)
     reaches the farm; the log as before (but for Bink closing the intro a
     frame earlier); ctest 22/22.
-- Next: _CIpow/_CIfmod (9 + 5 calls), the sprintf/sscanf family (float
-  formatting through _cfltcvt), then the STL (std::_Lockit, and the
+- Native too (2026-11-08, SwARc msvc_crt::vc6): the intrinsics _CIpow
+  0x6324B0 (9 calls) and _CIfmod 0x6326DA (5).
+  - _CIpow stores x and y as doubles, sets (cw & 0x300) | 0x7F through
+    0x6351C5 unless cw is 0x27F, loads x back (0x6351F5), fyl2x, 2^x in
+    0x6351B0, a negative x through the integer check 0x6326A5 (times 0.5
+    at 0x791E10 for odd/even); errors through 0x63254A (matherr, name
+    "pow" at 0x791E18).
+  - _CIfmod is _cintrindisp2 0x6354E0 with the table at 0x791E20: cw
+    0x133F, _trandisp2 0x634FE7 classifies with fxam (class table
+    0x79203C; a denormal counts as zero, so fmod(x, denormal) is a domain
+    error), the core 0x6326E4 loops fprem (_adj_fprem 0x63615C when
+    _adjust_fdiv is 1), the exit 0x6355AA.
+  - The switches (src/crt_globals.h): _fastflag 0x79D050 (bss, never
+    written: 0), _adjust_fdiv 0x79D054 (set at startup from
+    IsProcessorFeaturePresent(0), 0x40A300), _matherr_flag 0x7921D0
+    (9876: the CRT's own _matherr).
+  - msvc_crt_oracle: 8719148 calls, 0 mismatches (pow 43.5k and fmod
+    78.7k on the native path, the rest special cases handed over). It
+    lifts the fmod table's targets (ENTRIES in CMakeLists.txt), which
+    --only does not find. Mutations caught: the odd-power negation, both
+    EAX forms, the result stores, the integer check's pops, the pow
+    control word, the register y, the matherr stores, fmod's EAX and
+    _fastflag.
+  - Run: the scripted new game reaches the farm, the log as before (but
+    for the frame the intro is skipped at); ctest 27/27 (gfx_program
+    skipped: no GPU device in the capped scope).
+- Next: the sprintf/sscanf family (float formatting through _cfltcvt),
+  then the STL (std::_Lockit, and the
   template instantiations in game code, which signatures cannot name).
 
 ## macOS arm64 (2026-10-13, branch macos-metal)

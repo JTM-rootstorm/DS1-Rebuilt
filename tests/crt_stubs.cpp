@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "../src/crt_locale.h"
+#include "../src/crt_globals.h"
 #include "runtime/guest_memory.h"
 #include "x86/lifted.h"
 
@@ -51,6 +51,7 @@ namespace recomp::native::msvc_crt::oracle {
 void Setup(GuestMemory& mem) {
   mem.Commit(gen::kHeap, gen::kHeapSize + 0x1000, Prot::RW);  // and errno
   vc6::SetLocale(kCrtLocale);
+  vc6::SetMath(kCrtMath);
 }
 
 }  // namespace recomp::native::msvc_crt::oracle

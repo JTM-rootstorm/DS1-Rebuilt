@@ -48,4 +48,6 @@ recomp_add_msvc_crt_oracle(EXE "${DS1_GAME_EXE}"
   SYMBOLS "${CMAKE_CURRENT_SOURCE_DIR}/symbols"
   MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/lifter.manifest"
   STUBS "${CMAKE_CURRENT_SOURCE_DIR}/tests/crt_stubs.manifest"
-  SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/crt_stubs.cpp")
+  SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/crt_stubs.cpp"
+  # _CIfmod's dispatch table (0x791E30): the fmod core and its special cases.
+  ENTRIES 6326E4 635084 6350BD 6350BF 6350E7 635126)

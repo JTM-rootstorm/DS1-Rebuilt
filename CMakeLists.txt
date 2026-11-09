@@ -50,6 +50,6 @@ recomp_add_msvc_crt_oracle(EXE "${DS1_GAME_EXE}"
   STUBS "${CMAKE_CURRENT_SOURCE_DIR}/tests/crt_stubs.manifest"
   SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/crt_stubs.cpp"
   # _CIfmod's dispatch table (0x791E30): the fmod core and its special
-  # cases; _output's floating-point conversions (_cfltcvt, _cropzeros,
-  # _forcdecpt through the pointers at 0x75D5E0).
-  ENTRIES 6326E4 635084 6350BD 6350BF 6350E7 635126 40A6D9 40A383 40A329)
+  # cases; the floating-point conversions _output and _input call through
+  # the pointers at 0x75D5E0 (_cfltcvt, _cropzeros, _forcdecpt, _fassign).
+  ENTRIES 6326E4 635084 6350BD 6350BF 6350E7 635126 40A6D9 40A383 40A329 40A3E9)

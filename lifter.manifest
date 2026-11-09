@@ -120,3 +120,8 @@ native 006326DA msvc_crt::vc6::_CIfmod
 # to the original).
 native 0040B596 msvc_crt::vc6::_output
 native 006330D6 msvc_crt::vc6::_woutput
+
+# VC6's scanf engine (string streams natively) and its decimal parsing.
+native 006338BA msvc_crt::vc6::_input
+native 00631DC8 msvc_crt::vc6::_fltin2
+native 00631E47 msvc_crt::vc6::atof

@@ -161,9 +161,37 @@ First step from lifted to native source: the statically linked VC6 CRT.
   - Run: the scripted new game reaches the farm, text and menus as
     before, the log as before (but for the frame the intro is skipped
     at); ctest 28/28.
-- Next: sscanf (_input 0x6338BA) and atof (_fltin2), then the STL
-  (std::_Lockit, and the template instantiations in game code, which
-  signatures cannot name).
+- Native too (2026-11-09, SwARc msvc_crt::vc6): sscanf's engine _input
+  0x6338BA (sscanf 0x63189A, 24 callers: version strings, "%f , %f , %f",
+  "%x %x %x %x", "%dx%d", sets like "%50s[abcdef...]"), _fltin2 0x631DC8
+  (atof's core; also called by game code at 0x426C53, a strtod-like
+  wrapper testing its flags 0x240) and atof 0x631E47 (5 callers).
+  - _input reads floats through _fassign 0x40A3E9 (_cfltcvt_tab[2]):
+    _atodbl 0x40C5F9 / _atoflt 0x40C626, __strgtold12 0x40EDE9 (__mtold12
+    0x40ED22, __multtenpow12 0x411151 with its tables at 0x7608D0 and
+    0x760A30, 29 entries each up to 10^4096), _ld12tod 0x40C5CD /
+    _ld12tof 0x40C5E3 through _ld12cvt 0x40C461 (descriptors 0x75DA20,
+    0x75DA38; _RoundMan 0x40C306, _ZeroTail 0x40C267, _IncMan 0x40C2B0,
+    _ShrMan 0x40C3D4). %s and %c take their sets from 0x791E90
+    (" \t-\r]") and 0x791E98 ("]"). _inc 0x634316, _un_inc 0x634330
+    (_ungetc_lk 0x63718B), _whiteout 0x634347, _hextodec 0x6342DF.
+  - msvc_crt_oracle: 11179148 calls, 0 mismatches (_input 560k native,
+    41k handed over, mostly the multibyte locale; _fltin2 and atof all
+    native outside it). Mutations: 82 of 93 caught. Not caught: five
+    equivalent (three rewrites of the same test, an overflow bound past
+    where the value overflows anyway, the sub-denormal bound whose bits
+    fall out of the double either way), two unreachable (_ungetc_lk at
+    _base after a read, a negative hex digit), one line removed as dead
+    (the slot write a ']' always overwrites), one masked by the oracle's
+    1:1 code page stubs (mbtowc), and two that show only within a unit
+    of the 80-bit value of a rounding tie (the 24th digit's own
+    rounding). The originals run a %[ set to its ']'
+    past the format's end, and __mtold12 loops forever on digits summing
+    to zero (table digits are signed bytes).
+  - Run: the scripted new game reaches the farm, the log as before (but
+    for the frame the intro is skipped at); ctest 29/29.
+- Next: the STL (std::_Lockit, and the template instantiations in game
+  code, which signatures cannot name).
 
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with

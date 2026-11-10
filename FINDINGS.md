@@ -190,8 +190,55 @@ First step from lifted to native source: the statically linked VC6 CRT.
     to zero (table digits are signed bytes).
   - Run: the scripted new game reaches the farm, the log as before (but
     for the frame the intro is skipped at); ctest 29/29.
-- Next: the STL (std::_Lockit, and the template instantiations in game
-  code, which signatures cannot name).
+- Next: the STL (below).
+
+## STL (2026-11-09, branch view-distance)
+Identification before any native code: which template instantiations
+the game has and which member each function is.
+- Library code the signatures name: std::_Lockit 0x637710 (a critical
+  section 0x7A63A0 set up on first use, its state at 0x7A63B8 through
+  InterlockedExchange: 0 none, 1 initialising (Sleep(1) and retry), 2
+  ready, 3 cleaned up), ~_Lockit 0x6377AC, std::_CleanUp 0x63778E (an
+  atexit), std::_Xlen 0x6377C1 ("string too long"), std::_Xran 0x63781B
+  ("invalid string position"; the signatures call it _Xlen too),
+  std::string::_Tidy 0x63790B and the locale facets. The game's own string class (its char* in the first
+  word, null meaning "" at 0x721414) carries the text; std::string is
+  rare.
+- std::map/std::set (VC6 Dinkumware <xtree>): 195 instantiations in
+  game code, 2715 functions. Each has its own static _Nil and _Nilrefs
+  (not always adjacent); _Tree::_Init (137 bytes, the only one that tests
+  _Nil under _Lockit and allocates it with the game's operator new
+  0x403B80) gives both, and every function reading them belongs to that
+  instantiation. Members by what they call: _Init, ~_Tree, _Insert,
+  insert(value), insert(iterator,value) (once), erase(iterator),
+  erase(iterator,iterator), erase(key), _Erase, _Copy, _Copy(tree), the
+  copy constructor, _Lrotate, _Rrotate, iterator::_Inc/_Dec, _Lbound,
+  _Ubound, clear, find, lower_bound, upper_bound, equal_range. tools/
+  stl_trees.py does it from symbols/, generated/table.cpp and
+  llvm-objdump; tools/ghidra/ApplyNames.java puts the names
+  (std::_Tree@<_Nil>::<member>) and the evidence (plate comment) into
+  the Ghidra project, and symbols/functions.tsv was exported again
+  from it (only the names column changed; the lift differs only in the
+  comments naming the functions).
+  - Object: comparator byte +0, allocator byte +1, _Head +4, _Multi +8
+    (multimap/multiset), _Size +0xC. Node: _Left +0, _Parent +4, _Right
+    +8, value +0xC, colour last (0 red, 1 black); node sizes 0x14 to 0x78
+    (most 0x18/0x1C).
+  - Keys, from the compare in _Lbound/_Ubound (or insert): 99 uint32
+    (pointers among them), 10 int32, 3 uint32+uint16, 1 uint16, 2
+    float, 1 double, 1 char* through an inline strcmp, 74 through a
+    call: 35 the game string case-insensitive (0x42BC72: _strcmpi, or
+    _strnicmp for a length), 19 a game string against a char*
+    (0x698527, the same), 4 case-sensitive (0x4253EE), the rest one or
+    two each. 4 instantiations are never inserted into, so nothing
+    compares their keys.
+  - The value's construction, copy and destruction are inlined into
+    _Insert, erase(iterator), _Erase and _Copy, so those differ between
+    instantiations with the same layout; rotations, iterator steps,
+    _Init and ~_Tree differ only in their addresses and offsets.
+- Not yet: vector, list, deque and std::string instantiations (no
+  statics to group them by), and map vs set (the key extractor is
+  inlined; the value size only bounds it).
 
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with

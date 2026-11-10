@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Find the std::map/std::set instantiations (VC6 Dinkumware <xtree>) in
-DungeonSiege.exe and name their member functions.
+"""Name the STL template code in DungeonSiege.exe (FINDINGS.md, "STL").
 
-Every _Tree<...> instantiation has its own static _Nil node and _Nilrefs
-count. _Tree::_Init is the one function that tests _Nil under std::_Lockit
-and allocates it, which gives both statics; every function that reads them
-belongs to that instantiation. The members are then told apart by what they
-call, following <xtree>:
+The library is Dinkumware's for VC6, with a later <deque> (_Map, _Mapsize,
+_Myoff, _Mysize) and a hint insert in <xtree>. Template code is compiled
+into the game, once per type (identical bodies folded by the linker, so a
+list's _Buynode is shared by every list with that node size).
+
+std::map/std::set (<xtree>): every _Tree<...> has its own static _Nil node
+and _Nilrefs count. _Tree::_Init is the one function that tests _Nil under
+std::_Lockit and allocates it, which gives both statics; every function
+that reads them belongs to that instantiation. The members are then told
+apart by what they call:
 
   _Init, ~_Tree        lock and take or drop a _Nilrefs reference
   erase(iterator)      locks, and calls _Lrotate/_Rrotate (leaves, three
@@ -20,15 +24,21 @@ call, following <xtree>:
   clear, find, lower_bound, upper_bound, equal_range, erase(key) and the
   copy constructor call only the above (and the tree's key compare).
 
+std::list: _Buynode by its shape (allocate, _Next/_Prev to the arguments
+or the node itself); the constructor and insert(iterator,value) by their
+calls to it. std::vector: the two inserts that grow it (insert(P,n,x) and
+insert(P,first,last)) start by comparing _End - _Last with the count and
+allocate and free; insert(iterator,value) and push_back call insert(P,1,x). The one
+deque, std::string and <stdexcept> copies were read by hand (HAND).
+
 Inputs are what the README's steps produce: symbols/functions.tsv
 (function extents), generated/table.cpp (the lifter's entries, which add
 functions the analysis missed) and llvm-objdump's disassembly of the EXE.
 
-Usage: python3 -I tools/stl_trees.py --exe DungeonSiege.exe [--out out/stl]
+Usage: python3 -I tools/stl_names.py --exe DungeonSiege.exe [--out out/stl]
            [--objdump llvm-objdump]
-writes OUT/members.tsv (one row per function), OUT/trees.tsv (one row per
-instantiation) and OUT/names.tsv (address, name, evidence) for
-tools/ghidra/ApplyNames.java (FINDINGS.md, "STL").
+writes OUT/names.tsv (address, name, evidence) for
+tools/ghidra/ApplyNames.java and OUT/trees.tsv (one row per map/set).
 """
 
 import argparse
@@ -200,7 +210,7 @@ def key_kind(img, e, members):
     return None
 
 
-def classify(img):
+def classify_trees(img):
     trees = []
     for init in sorted(img.callers[LOCKIT]):
         b = img.text(init)
@@ -317,6 +327,138 @@ def classify(img):
     return trees, role, tree_of
 
 
+def classify_lists(img, taken):
+    """list::_Buynode by shape; list() and insert(iterator,value) by their
+    calls to it. Returns {va: (name, evidence)}."""
+    out = {}
+    bn = {}
+    for e in img.funcs:
+        if e in taken or img.callees[e] != [NEW]:
+            continue
+        b = img.text(e)
+        if len(b) == 14 and b[1] == f"call\t0x{NEW:x}" and \
+                b[3] == "mov\tecx, dword ptr [esp + 0x4]" and \
+                b[-2] == "mov\tdword ptr [eax + 0x4], ecx" and b[-1] == "ret\t0x8":
+            bn[e] = int(b[0].split("0x")[1], 16)
+    for e, node in bn.items():
+        out[e] = (f"std::list@node{node:X}::_Buynode",
+                  f"allocates a {node:#x}-byte node, _Next/_Prev to the arguments "
+                  f"or the node itself")
+    for e, node in bn.items():
+        for c in img.callers[e]:
+            if c in taken or c in out:
+                continue
+            b, cs = img.text(c), img.callees[c]
+            others = [x for x in cs if x != e]
+            if cs == [e] and img.size(c) <= 40 and \
+                    "mov\tdword ptr [esi + 0x4], eax" in b and \
+                    any(re.match(r"(and|mov)\tdword ptr \[esi \+ 0x8\], 0x0$", t) for t in b):
+                out[c] = (f"std::list@node{node:X}::list()",
+                          "_Head = _Buynode(), _Size = 0")
+            elif len(cs) - len(others) == 1 and len(set(others)) <= 1 and \
+                    img.size(c) <= 160 and "ret\t0xc" in b and \
+                    any(re.match(r"inc\tdword ptr \[e.. \+ 0x8\]$", t) for t in b) and \
+                    any(re.match(r"push\tdword ptr \[e.. \+ 0x4\]$", t) for t in b):
+                out[c] = (f"std::list@node{node:X}::insert(iterator,value)",
+                          "_Buynode(_P, _Prev(_P)), links it, copies the value, ++_Size")
+    return out
+
+
+def classify_vectors(img, taken):
+    """vector::insert(P,n,x) / insert(P,first,last), and insert(P,x) above
+    them. Returns {va: (name, evidence)}."""
+    out = {}
+    load = re.compile(r"mov\t(e..), dword ptr \[(e(?:si|di|bx|cx)) \+ 0x(8|c)\]$")
+    for e in img.funcs:
+        if e in taken or NEW not in img.callees[e] or DELETE not in img.callees[e]:
+            continue
+        b = img.text(e)
+        if "ret\t0xc" not in b:
+            continue
+        head = b[:20]
+        regs, base = {}, None
+        for t in head:
+            m = load.match(t)
+            if m and base in (None, m.group(2)):
+                regs[m.group(3)], base = m.group(1), m.group(2)
+        if set(regs) != {"8", "c"}:
+            continue
+        if not any(t == f"sub\t{regs['c']}, {regs['8']}" for t in head):
+            continue
+        # element size: from the division of the free space, if any
+        elem = 1
+        for i, t in enumerate(head):
+            m = re.match(r"sar\t" + regs["c"] + r", 0x([0-9a-f]+)$", t)
+            if m:
+                elem = 1 << int(m.group(1), 16)
+                break
+            if t.startswith("idiv"):
+                # the divisor: the last constant pushed or moved before it
+                imm = re.compile(r"(?:push\t|mov\te.., )0x([0-9a-f]+)$")
+                m = next((imm.match(x) for x in reversed(head[:i]) if imm.match(x)), None)
+                elem = int(m.group(1), 16) if m else None
+                break
+        rng = any(re.match(r"sub\te.., dword ptr \[ebp \+ 0xc\]$", t) for t in head[:8])
+        what = "insert(iterator,first,last)" if rng else "insert(iterator,n,value)"
+        tag = f"elem{elem:X}" if elem else "elem?"
+        out[e] = (f"std::vector@{tag}@{e:X}::{what}",
+                  "compares _End - _Last with the count, else grows to "
+                  "size() + max(size(), count): allocate, copy, fill, free")
+    for e in list(out):
+        if not out[e][0].endswith("insert(iterator,n,value)"):
+            continue
+        base = out[e][0].rsplit("::", 1)[0]
+        for c in img.callers[e]:
+            b = img.text(c)
+            if c in taken or c in out or img.callees[c] != [e] or img.size(c) > 80:
+                continue
+            if "push\t0x1" not in b:
+                continue
+            if b[-1] == "ret\t0x4" and any(re.match(r"push\tdword ptr \[e.. \+ 0x8\]$", t) for t in b):
+                out[c] = (f"{base}::push_back(value)", "insert(end(), 1, _X)")
+            elif b[-1] == "ret\t0x8":
+                out[c] = (f"{base}::insert(iterator,value)",
+                          "insert(_P, 1, _X), returns begin() + the old offset")
+    return out
+
+
+# Read by hand (one copy each). The game's std::string is used only by the
+# <stdexcept> classes; the deque holds 0xA0-byte elements, 25 to a block.
+HAND = {
+    0x6377C1: ("std::_Xlen", "throws length_error(\"string too long\")"),
+    0x63781B: ("std::_Xran", "throws out_of_range(\"invalid string position\")"),
+    0x5FDFDC: ("std::string::_Tidy(bool)", "drops the reference byte at _Ptr[-1] (0 or 255: frees), zeroes _Ptr/_Len/_Res"),
+    0x5FE017: ("std::string::assign(const_char*,n)", "_Grow(n, true), copies, terminates"),
+    0x5FDEFA: ("std::string::assign(const_string&,pos,n)", "_Xran past the end, erase() on itself, shares when whole, else _Grow and copy"),
+    0x5FE056: ("std::string::erase(pos,n)", "_Xran past the end, _Split, memmove the tail, _Grow(len, false)"),
+    0x5FE0BD: ("std::string::_Grow(n,trim)", "_Xlen above npos-1, unshares, trims small buffers, _Copy"),
+    0x5FE142: ("std::string::_Copy(n)", "allocates (n | 15) + 2 with the reference byte, copies"),
+    0x5FE231: ("std::string::_Split()", "a shared buffer (reference byte not 0/255) is copied with assign"),
+    0x5FDDA2: ("std::logic_error::logic_error(const_string&)", "exception base, _Str copy-assigned, logic_error vtable 0x725BEC"),
+    0x5FDDED: ("std::logic_error::what()", "_Str.c_str()"),
+    0x5FDDFA: ("std::logic_error::_Doraise()", "throws a copy of *this"),
+    0x5FDE17: ("std::logic_error::~logic_error", "_Str._Tidy(true), ~exception"),
+    0x5FDE33: ("std::logic_error::scalar_deleting_dtor", "~logic_error, frees when bit 0"),
+    0x5FDE61: ("std::logic_error::logic_error(const_logic_error&)", "copies the exception and _Str"),
+    0x5FDEA2: ("std::length_error::_Doraise()", "throws a copy of *this (length_error vtable 0x725BCC)"),
+    0x5FDEC6: ("std::length_error::scalar_deleting_dtor", "~logic_error, frees when bit 0"),
+    0x5FDEE2: ("std::length_error::length_error(const_length_error&)", "logic_error copy, length_error vtable"),
+    0x5FDD4E: ("std::deque::_Xlen", "throws length_error(\"deque<T> too long\")"),
+    0x5FD906: ("std::deque::_Growmap(n)", "_Xlen when the map cannot grow by n, allocates a larger map, frees the old"),
+    0x5FD336: ("std::deque::push_back(value)", "_Growmap(1) when full, a 0xFA0-byte block when missing, ++_Mysize, copy-constructs"),
+    0x5FD2EE: ("std::deque::back()", "*(begin() + _Mysize - 1)"),
+    0x5FD2CC: ("std::deque::operator[](n)", "*(begin() + n)"),
+    0x5FD4C1: ("std::deque::const_iterator::operator*", "_Map[(off / 25) mod _Mapsize] + (off % 25) * 0xA0"),
+    0x5FD30D: ("std::deque::pop_front()", "++_Myoff (wraps at _Mapsize * 25), --_Mysize, _Myoff = 0 when empty"),
+    0x5FD8C4: ("std::deque::pop_back()", "--_Mysize, _Myoff = 0 when empty"),
+    0x5FD4A8: ("std::deque::_Tidy()", "pop_back() until empty, then frees the blocks and the map"),
+    0x5FD228: ("std::deque::operator=", "copies over, erases or inserts the difference"),
+    0x5FD3FF: ("std::deque::erase(first,last)", "copies the shorter side over the hole, pops the freed elements"),
+    0x5FE35A: ("std::copy<deque::iterator>", "element-wise assignment, forward"),
+    0x5FE317: ("std::copy_backward<deque::iterator>", "element-wise assignment, backward"),
+}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--exe", required=True)
@@ -326,30 +468,34 @@ def main():
     ap.add_argument("--out", default="out/stl")
     a = ap.parse_args()
     img = Image(a.exe, a.symbols, a.table, a.objdump)
-    trees, role, tree_of = classify(img)
+    trees, role, tree_of = classify_trees(img)
     os.makedirs(a.out, exist_ok=True)
-    with open(os.path.join(a.out, "members.tsv"), "w") as o:
-        o.write("va\tnil\trole\tsize\n")
-        for m in sorted(role):
-            o.write(f"{m:08X}\t{tree_of[m]:08X}\t{role[m]}\t{img.size(m)}\n")
     with open(os.path.join(a.out, "trees.tsv"), "w") as o:
         o.write("nil\tnilrefs\tnode\tkey\tmembers\n")
         for t in trees:
             o.write(f"{t['nil']:08X}\t{t['nilrefs']:08X}\t{t['node']:#x}\t"
                     f"{t['key'] or '-'}\t{len(t['members'])}\n")
-    stats = collections.Counter(role.values())
-    print(f"{len(trees)} instantiations, {len(role)} functions", file=sys.stderr)
-    for r, n in stats.most_common():
-        print(f"{n:5d} {r}", file=sys.stderr)
+    names = {}
     tinfo = {t["nil"]: t for t in trees}
-    with open(os.path.join(a.out, "names.tsv"), "w") as o:
-        for m in sorted(role):
-            t = tinfo[tree_of[m]]
-            o.write(f"{m:08X}\tstd::_Tree@{t['nil']:X}::{role[m]}\t"
-                    f"VC6 <xtree> _Tree member {role[m]}: {EVIDENCE[role[m]]}. "
+    for m in role:
+        t = tinfo[tree_of[m]]
+        names[m] = (f"std::_Tree@{t['nil']:X}::{role[m]}",
+                    f"<xtree> _Tree member {role[m]}: {EVIDENCE[role[m]]}. "
                     f"Instantiation: _Nil {t['nil']:#x}, _Nilrefs {t['nilrefs']:#x}, "
-                    f"node {t['node']:#x} bytes, key {t['key'] or 'not compared'}. "
-                    f"From tools/stl_trees.py.\n")
+                    f"node {t['node']:#x} bytes, key {t['key'] or 'not compared'}")
+    names.update(HAND)
+    names.update(classify_lists(img, names.keys()))
+    names.update(classify_vectors(img, names.keys()))
+    kinds = collections.Counter(re.sub(r"@[^:]*", "", n) if not n.startswith("std::_Tree@")
+                                else "std::_Tree::" + n.split("::", 2)[2]
+                                for n, _ in names.values())
+    print(f"{len(trees)} map/set instantiations; {len(names)} functions named", file=sys.stderr)
+    for k, n in sorted(kinds.items(), key=lambda kv: (kv[0].split("::")[1], -kv[1])):
+        print(f"{n:5d} {k}", file=sys.stderr)
+    with open(os.path.join(a.out, "names.tsv"), "w") as o:
+        for m in sorted(names):
+            n, why = names[m]
+            o.write(f"{m:08X}\t{n}\t{why}. From tools/stl_names.py.\n")
 
 
 if __name__ == "__main__":

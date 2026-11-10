@@ -16,6 +16,12 @@
 name  004023DD WinMain
 probe 004023DD WinMain
 
+# <stdexcept> functions reached only through vtables, which Ghidra's
+# function list lacks (the rest of the STL: FINDINGS.md, "STL").
+name  005FDDED std::logic_error::what()
+name  005FDEC6 std::length_error::scalar_deleting_dtor
+name  005FDEE2 std::length_error::length_error(const_length_error&)
+
 # SEH: __except_handler3 (0040A020) *calls* the __except block, which starts
 # with `mov esp, [ebp-18h]` and never returns. Resume instead of calling.
 name   0040A020 __except_handler3

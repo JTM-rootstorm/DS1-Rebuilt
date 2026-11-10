@@ -194,32 +194,37 @@ First step from lifted to native source: the statically linked VC6 CRT.
 
 ## STL (2026-11-09, branch view-distance)
 Identification before any native code: which template instantiations
-the game has and which member each function is.
+the game has and which member each function is. tools/stl_names.py does
+it from symbols/, generated/table.cpp and llvm-objdump (2949 functions);
+tools/ghidra/ApplyNames.java puts the names and the evidence (plate
+comment) into the Ghidra project, and symbols/functions.tsv was exported
+again from it (only the names column changed; the lift differs only in
+the comments naming the functions). Three <stdexcept> functions reached
+only through vtables are not in Ghidra's list: lifter.manifest names
+them.
+- The library is Dinkumware's for VC6, but its <deque> has the later
+  layout (_Map, _Mapsize, _Myoff, _Mysize, not VC6's iterator pair) and
+  <xtree> a hint insert. Template code is compiled once per type, and the
+  linker folds identical bodies: list::_Buynode is shared by every list
+  with the same node size.
 - Library code the signatures name: std::_Lockit 0x637710 (a critical
   section 0x7A63A0 set up on first use, its state at 0x7A63B8 through
   InterlockedExchange: 0 none, 1 initialising (Sleep(1) and retry), 2
   ready, 3 cleaned up), ~_Lockit 0x6377AC, std::_CleanUp 0x63778E (an
   atexit), std::_Xlen 0x6377C1 ("string too long"), std::_Xran 0x63781B
   ("invalid string position"; the signatures call it _Xlen too),
-  std::string::_Tidy 0x63790B and the locale facets. The game's own string class (its char* in the first
-  word, null meaning "" at 0x721414) carries the text; std::string is
-  rare.
-- std::map/std::set (VC6 Dinkumware <xtree>): 195 instantiations in
-  game code, 2715 functions. Each has its own static _Nil and _Nilrefs
-  (not always adjacent); _Tree::_Init (137 bytes, the only one that tests
-  _Nil under _Lockit and allocates it with the game's operator new
-  0x403B80) gives both, and every function reading them belongs to that
-  instantiation. Members by what they call: _Init, ~_Tree, _Insert,
-  insert(value), insert(iterator,value) (once), erase(iterator),
+  std::string::_Tidy 0x63790B and the locale facets.
+- std::map/std::set (<xtree>): 195 instantiations in game code, 2715
+  functions. Each has its own static _Nil and _Nilrefs (not always
+  adjacent); _Tree::_Init (137 bytes, the only one that tests _Nil under
+  _Lockit and allocates it with the game's operator new 0x403B80) gives
+  both, and every function reading them belongs to that instantiation.
+  Members by what they call: _Init, ~_Tree, _Insert, insert(value),
+  insert(iterator,value) (once), erase(iterator),
   erase(iterator,iterator), erase(key), _Erase, _Copy, _Copy(tree), the
   copy constructor, _Lrotate, _Rrotate, iterator::_Inc/_Dec, _Lbound,
-  _Ubound, clear, find, lower_bound, upper_bound, equal_range. tools/
-  stl_trees.py does it from symbols/, generated/table.cpp and
-  llvm-objdump; tools/ghidra/ApplyNames.java puts the names
-  (std::_Tree@<_Nil>::<member>) and the evidence (plate comment) into
-  the Ghidra project, and symbols/functions.tsv was exported again
-  from it (only the names column changed; the lift differs only in the
-  comments naming the functions).
+  _Ubound, clear, find, lower_bound, upper_bound, equal_range. Named
+  std::_Tree@<_Nil>::<member>.
   - Object: comparator byte +0, allocator byte +1, _Head +4, _Multi +8
     (multimap/multiset), _Size +0xC. Node: _Left +0, _Parent +4, _Right
     +8, value +0xC, colour last (0 red, 1 black); node sizes 0x14 to 0x78
@@ -227,18 +232,47 @@ the game has and which member each function is.
   - Keys, from the compare in _Lbound/_Ubound (or insert): 99 uint32
     (pointers among them), 10 int32, 3 uint32+uint16, 1 uint16, 2
     float, 1 double, 1 char* through an inline strcmp, 74 through a
-    call: 35 the game string case-insensitive (0x42BC72: _strcmpi, or
-    _strnicmp for a length), 19 a game string against a char*
-    (0x698527, the same), 4 case-sensitive (0x4253EE), the rest one or
-    two each. 4 instantiations are never inserted into, so nothing
-    compares their keys.
+    call: 35 the game's string class (its char* in the first word, null
+    meaning "" at 0x721414) case-insensitive (0x42BC72: _strcmpi, or
+    _strnicmp for a length), 19 that string against a char* (0x698527,
+    the same), 4 case-sensitive (0x4253EE), the rest one or two each. 4
+    instantiations are never inserted into, so nothing compares their
+    keys.
   - The value's construction, copy and destruction are inlined into
     _Insert, erase(iterator), _Erase and _Copy, so those differ between
     instantiations with the same layout; rotations, iterator steps,
     _Init and ~_Tree differ only in their addresses and offsets.
-- Not yet: vector, list, deque and std::string instantiations (no
-  statics to group them by), and map vs set (the key extractor is
-  inlined; the value size only bounds it).
+- std::vector: 63 instantiations by their growing insert(P,n,x) (it
+  compares _End - _Last with n, else allocates size() + max(size(), n),
+  copies, fills, frees), one insert(P,first,last) (vector<char>), 32
+  insert(P,x) and 55 push_back above them. Object: allocator +0, _First
+  +4, _Last +8, _End +0xC. Element sizes 1 to 0x1AC (most 8 to 0x18).
+  Named std::vector@elem<size>@<insert(P,n,x)>::<member>.
+- std::list: 17 _Buynode (one per node size after folding, 0xC to 0x90),
+  6 list() and 29 insert(iterator,value) calling them. Object:
+  allocator +0, _Head +4, _Size +8; node _Next +0, _Prev +4, value +8.
+  Named std::list@node<size>::<member>.
+- std::deque: one, of 0xA0-byte elements, 25 to a 0xFA0-byte block
+  (its copy constructor 0x5FEC52, assignment 0x5FEB55): _Xlen 0x5FDD4E
+  ("deque<T> too long"), _Growmap 0x5FD906, push_back 0x5FD336, back
+  0x5FD2EE, operator[] 0x5FD2CC, element access 0x5FD4C1, pop_front
+  0x5FD30D, pop_back 0x5FD8C4, _Tidy 0x5FD4A8, operator= 0x5FD228,
+  erase(first,last) 0x5FD3FF, std::copy/copy_backward over its iterators
+  0x5FE35A/0x5FE317. Object: _Map +4, _Mapsize +8, _Myoff +0xC, _Mysize
+  +0x10.
+- std::string (reference-counted: a count byte before the text, 0 or
+  255 unshared) is used only by <stdexcept>: _Tidy 0x5FDFDC,
+  assign(const char*, n) 0x5FE017, assign(const string&, pos, n)
+  0x5FDEFA, erase 0x5FE056, _Grow 0x5FE0BD, _Copy 0x5FE142, _Split
+  0x5FE231; logic_error 0x5FDDA2 (from a string), 0x5FDE61 (copy),
+  ~logic_error 0x5FDE17, what 0x5FDDED, _Doraise 0x5FDDFA; length_error
+  copy 0x5FDEE2, _Doraise 0x5FDEA2.
+- Not named: the vector and list members that neither grow nor
+  allocate (erase, clear, operator=, _Destroy, ~vector/~list where not
+  inlined, splice, sort, remove): nothing ties them to a container, and
+  hand-written linked lists or arrays in the game would look the same. Map vs set is not
+  told apart (the key extractor is inlined; the value size only bounds
+  it), nor the element types.
 
 ## macOS arm64 (2026-10-13, branch macos-metal)
 Built and run on an M3 Pro (macOS, Homebrew SDL3/ffmpeg/llvm@22) with

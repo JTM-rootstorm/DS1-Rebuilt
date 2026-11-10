@@ -42,6 +42,13 @@ hooks, docs).
   address space, threads, SEH, and every imported Windows/DirectX/Miles/
   Bink function, implemented on SDL3 (graphics on SDL_GPU: Vulkan, or
   Metal on macOS) and ffmpeg.
+- **Native functions** (SwARc `platforms/win32`, recomp_msvc_crt): the
+  first step from lifted to hand-written code. The EXE's statically
+  linked Visual C++ 6 runtime (string and memory functions, 64-bit
+  helpers, number parsing and formatting, sprintf/sscanf, math
+  intrinsics) is reimplemented natively; `lifter.manifest` binds the
+  EXE's copies to it (`native` lines), and an oracle test checks each one
+  against the lifted original.
 
 SwARc's ARCHITECTURE.md describes the design in detail;
 [ARCHITECTURE.md](ARCHITECTURE.md) here covers the Dungeon Siege parts.
@@ -132,6 +139,27 @@ git clone https://github.com/JTM-rootstorm/SwARc.git "$REPO/../../SwARc"
    `~/.local/share/ds1`); crash reports and hang dumps go to `crashes/`
    and `hangs/` there.
 
+6. **Names for reading** (optional; only comments in the lifted code
+   change). `tools/stl_names.py` finds the STL template code in the EXE
+   (every std::map/set instantiation and its members, the vector and
+   list inserts, the deque and std::string copies; FINDINGS.md, "STL")
+   and `tools/ghidra/ApplyNames.java` writes the names, each with its
+   evidence as a plate comment, into the Ghidra project from step 3,
+   never over a name given by hand. Then export the functions again and
+   lift as in step 4:
+
+   ```sh
+   python3 -I tools/stl_names.py --exe "$GAME/DungeonSiege.exe" \
+     --objdump /usr/lib/llvm/22/bin/llvm-objdump
+   bash /usr/share/ghidra/support/analyzeHeadless /tmp/ds1_ghidra ds1 \
+     -process DungeonSiege.exe -noanalysis -scriptPath tools/ghidra \
+     -postScript ApplyNames.java "$PWD/out/stl/names.tsv"
+   bash /usr/share/ghidra/support/analyzeHeadless /tmp/ds1_ghidra ds1 \
+     -process DungeonSiege.exe -noanalysis -readOnly \
+     -scriptPath "$SWARC/tools/ghidra" \
+     -postScript ExportFunctions.java "$PWD/symbols/functions.tsv"
+   ```
+
 **macOS** (Apple Silicon): no dxvk-native; SDL_GPU runs on Metal. With
 Homebrew (`brew install cmake ninja sdl3 ffmpeg llvm@22 glslang
 spirv-cross ghidra`), steps 2-5 are the same with these differences:
@@ -152,7 +180,10 @@ and the x87 model are optimised in both.
 host CPU's own x87 and against its SoftFloat reference, and every x87
 and integer instruction form found in the EXE (plus random x87
 sequences) lifted versus executed natively. The EXE-derived tests need
-`-DDS1_GAME_EXE="$GAME/DungeonSiege.exe"` at configure time.
+`-DDS1_GAME_EXE="$GAME/DungeonSiege.exe"` at configure time; among them
+`msvc_crt_oracle` runs every native runtime function and its lifted
+original from the same memory and registers on random arguments and
+compares the results.
 
 ## Useful switches
 
